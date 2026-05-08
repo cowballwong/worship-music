@@ -27,8 +27,9 @@ let editMode = false;
 let editPdfBytes = null;        // current PDF bytes (Uint8Array) for editing
 let editPdfDoc = null;          // pdfjs doc
 let editPageDims = [];          // [{ w, h }] in PDF points (page native)
-let pendingAnnotations = [];    // {page, x, y, text, color, size, type:'text'|'highlight'}
+let pendingAnnotations = [];    // {page, ...} with type 'text' | 'highlight' | 'ink'
 let activeTool = "text";
+let currentStroke = null;       // active pen stroke being drawn
 
 // OAuth state
 let oauthToken = null;
@@ -475,7 +476,11 @@ async function enterEditMode() {
       const overlay = document.createElement("div");
       overlay.className = "edit-overlay";
       overlay.dataset.page = i;
-      overlay.addEventListener("click", (e) => onOverlayTap(e, i));
+      overlay.addEventListener("click", (e) => {
+        if (currentStroke) return; // suppress click after stroke ends
+        onOverlayTap(e, i);
+      });
+      attachPenHandlers(overlay, i);
       container.appendChild(overlay);
 
       wrap.appendChild(container);
@@ -597,6 +602,116 @@ function updateEditCount() {
   $("edit-count").textContent = n ? `${n} pending change${n === 1 ? "" : "s"}` : "";
 }
 
+// ────────── PEN ─────────────────────────────────────
+function attachPenHandlers(overlay, pageNum) {
+  overlay.addEventListener("pointerdown", (e) => {
+    if (!editMode || activeTool !== "pen") return;
+    e.preventDefault();
+    overlay.setPointerCapture(e.pointerId);
+    const rect = overlay.getBoundingClientRect();
+    const path = ensureSvgPath(overlay);
+    currentStroke = {
+      pageNum,
+      overlay,
+      points: [{ x: e.clientX - rect.left, y: e.clientY - rect.top }],
+      pathEl: path,
+      color: $("edit-color").value,
+      width: Math.max(1.2, parseInt($("edit-fontsize").value, 10) / 4),
+    };
+    drawPenStroke(currentStroke);
+  });
+  overlay.addEventListener("pointermove", (e) => {
+    if (!currentStroke || currentStroke.overlay !== overlay) return;
+    const rect = overlay.getBoundingClientRect();
+    currentStroke.points.push({
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+    });
+    drawPenStroke(currentStroke);
+  });
+  const finalize = (e) => {
+    if (!currentStroke || currentStroke.overlay !== overlay) return;
+    try { overlay.releasePointerCapture(e.pointerId); } catch {}
+    const stroke = currentStroke;
+    currentStroke = null;
+    if (stroke.points.length < 2) {
+      stroke.pathEl.remove();
+      return;
+    }
+    finalizeStroke(stroke);
+    setTimeout(() => { /* allow click suppression */ }, 50);
+  };
+  overlay.addEventListener("pointerup", finalize);
+  overlay.addEventListener("pointercancel", finalize);
+  overlay.addEventListener("pointerleave", (e) => {
+    // keep drawing if pointer captured; finalize on actual lift handled above
+  });
+}
+
+function ensureSvgPath(overlay) {
+  let svg = overlay.querySelector("svg");
+  if (!svg) {
+    svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    overlay.appendChild(svg);
+  }
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  svg.appendChild(path);
+  return path;
+}
+
+function drawPenStroke(s) {
+  if (!s.pathEl) return;
+  const d = pointsToSvgD(s.points);
+  s.pathEl.setAttribute("d", d);
+  s.pathEl.setAttribute("stroke", s.color);
+  s.pathEl.setAttribute("stroke-width", s.width);
+}
+
+function pointsToSvgD(pts) {
+  if (!pts.length) return "";
+  let d = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
+  for (let i = 1; i < pts.length; i++) {
+    d += ` L ${pts[i].x.toFixed(2)} ${pts[i].y.toFixed(2)}`;
+  }
+  return d;
+}
+
+function finalizeStroke(stroke) {
+  const overlay = stroke.overlay;
+  const rect = overlay.getBoundingClientRect();
+  const dim = editPageDims[stroke.pageNum - 1];
+  const cssW = rect.width, cssH = rect.height;
+  const pdfPoints = stroke.points.map((p) => ({
+    x: (p.x / cssW) * dim.w,
+    y: dim.h - (p.y / cssH) * dim.h,
+  }));
+  const idx = pendingAnnotations.length;
+  pendingAnnotations.push({
+    type: "ink",
+    page: stroke.pageNum,
+    points: pdfPoints,
+    color: stroke.color,
+    width: (stroke.width / cssW) * dim.w, // scale width to PDF units
+    domRef: stroke.pathEl,
+    idx,
+  });
+  stroke.pathEl.dataset.idx = idx;
+  stroke.pathEl.style.pointerEvents = "stroke";
+  stroke.pathEl.style.cursor = "pointer";
+  stroke.pathEl.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const i = parseInt(stroke.pathEl.dataset.idx, 10);
+    if (Number.isNaN(i)) return;
+    pendingAnnotations[i] = null;
+    stroke.pathEl.remove();
+    updateEditCount();
+  });
+  updateEditCount();
+}
+
 async function saveAndUpload() {
   if (!editMode) return;
   if (!oauthToken?.access_token) return toast("Not signed in.");
@@ -639,6 +754,17 @@ async function saveAndUpload() {
           color: rgb(c.r, c.g, c.b),
           opacity: 0.35,
         });
+      } else if (a.type === "ink") {
+        // Draw stroke as series of line segments (Round line cap for smoothness)
+        for (let i = 1; i < a.points.length; i++) {
+          page.drawLine({
+            start: { x: a.points[i - 1].x, y: a.points[i - 1].y },
+            end:   { x: a.points[i].x,     y: a.points[i].y     },
+            thickness: Math.max(0.8, a.width),
+            color: rgb(c.r, c.g, c.b),
+            lineCap: window.PDFLib.LineCapStyle.Round,
+          });
+        }
       }
     }
 
@@ -848,15 +974,17 @@ document.querySelectorAll(".edit-tool").forEach((b) =>
   b.addEventListener("click", () => {
     activeTool = b.dataset.tool;
     document.querySelectorAll(".edit-tool").forEach((x) => x.classList.toggle("active", x === b));
+    document.querySelectorAll(".edit-overlay").forEach((o) =>
+      o.classList.toggle("pen-mode", activeTool === "pen")
+    );
   })
 );
 $("edit-undo").addEventListener("click", () => {
-  // remove last live annotation
   for (let i = pendingAnnotations.length - 1; i >= 0; i--) {
     if (pendingAnnotations[i]) {
       pendingAnnotations[i] = null;
-      // remove the corresponding pin DOM
-      document.querySelectorAll(".annotation-pin, .edit-overlay > div").forEach((el) => {
+      // remove DOM (pins / highlight rects / SVG paths)
+      document.querySelectorAll(".annotation-pin, .edit-overlay > div, .edit-overlay svg path").forEach((el) => {
         if (parseInt(el.dataset.idx, 10) === i) el.remove();
       });
       updateEditCount();
