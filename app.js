@@ -1,5 +1,6 @@
-// Worship Music app — Phase 1 (read-only Drive viewer)
-// Phase 2 (OAuth + edit/save) and Phase 3 (playlist editor) come next.
+// Worship Music app — Phase 2 (read + OAuth + save back to Drive)
+// Editor UI (annotation tools) lands in Phase 2.1 — for now Save uploads
+// the (unmodified) PDF back to verify the round-trip works.
 
 import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/build/pdf.min.mjs";
 pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -8,17 +9,35 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
 const cfg = window.WORSHIP_CONFIG;
 const $ = (id) => document.getElementById(id);
 
+// ────────────────────────────────────────────────
 // State
-let libFiles = [];      // [{id, name, size, mimeType}]
-let playlists = [];     // [{id, name, json, songs[]}]
-let libBySongTitle = {}; // title -> file
+// ────────────────────────────────────────────────
+let libFiles = [];
+let playlists = [];
+let libBySongTitle = {};
 let libSubfolderId = null;
 let plSubfolderId = null;
 
+let viewerQueue = [];
+let viewerIndex = 0;
+let currentPdfBytes = null;   // bytes of currently-open PDF (for re-save)
+let currentPdfDoc = null;     // pdfjs document instance
+
+// OAuth state
+let oauthToken = null;        // {access_token, expires_at_ms}
+let tokenClient = null;       // GIS TokenClient instance
+
 // ────────────────────────────────────────────────
-// Drive API helpers (read-only, public folder + API key)
+// Drive helpers
 // ────────────────────────────────────────────────
 const API = "https://www.googleapis.com/drive/v3";
+const UPLOAD = "https://www.googleapis.com/upload/drive/v3";
+
+function authedHeaders() {
+  if (oauthToken && oauthToken.access_token)
+    return { Authorization: `Bearer ${oauthToken.access_token}` };
+  return {};
+}
 
 async function driveListFolder(folderId) {
   const url =
@@ -48,14 +67,121 @@ async function findSubfolderId(parentId, name) {
 }
 
 function pdfDownloadUrl(fileId) {
-  // Direct media URL with API key — works for public files, returns PDF bytes.
   return `${API}/files/${fileId}?alt=media&key=${cfg.API_KEY}`;
 }
 
+async function uploadPdfBytes(fileId, bytes) {
+  if (!oauthToken?.access_token) throw new Error("Not signed in");
+  const r = await fetch(
+    `${UPLOAD}/files/${fileId}?uploadType=media`,
+    {
+      method: "PATCH",
+      headers: {
+        ...authedHeaders(),
+        "Content-Type": "application/pdf",
+      },
+      body: bytes,
+    }
+  );
+  if (!r.ok) throw new Error(`Upload failed: ${r.status} ${await r.text()}`);
+  return await r.json();
+}
+
 // ────────────────────────────────────────────────
-// Initial load
+// OAuth (Google Identity Services — token model)
+// ────────────────────────────────────────────────
+const SCOPE = "https://www.googleapis.com/auth/drive";
+const TOKEN_KEY = "wm-oauth-token-v1";
+
+function loadStoredToken() {
+  try {
+    const raw = localStorage.getItem(TOKEN_KEY);
+    if (!raw) return null;
+    const t = JSON.parse(raw);
+    if (!t.access_token || !t.expires_at_ms) return null;
+    if (Date.now() > t.expires_at_ms - 60000) return null; // expires in <1 min
+    return t;
+  } catch {
+    return null;
+  }
+}
+function storeToken(t) {
+  oauthToken = t;
+  localStorage.setItem(TOKEN_KEY, JSON.stringify(t));
+  reflectAuthState();
+}
+function clearToken() {
+  oauthToken = null;
+  localStorage.removeItem(TOKEN_KEY);
+  reflectAuthState();
+}
+
+function initGis() {
+  if (
+    !cfg.OAUTH_CLIENT_ID ||
+    cfg.OAUTH_CLIENT_ID === "REPLACE_ME_CLIENT_ID.apps.googleusercontent.com"
+  ) {
+    console.warn("OAUTH_CLIENT_ID not set — sign-in disabled");
+    return;
+  }
+  if (!window.google || !window.google.accounts) {
+    // GIS script not yet ready — retry shortly
+    setTimeout(initGis, 250);
+    return;
+  }
+  tokenClient = window.google.accounts.oauth2.initTokenClient({
+    client_id: cfg.OAUTH_CLIENT_ID,
+    scope: SCOPE,
+    callback: (resp) => {
+      if (resp.error) {
+        toast(`Sign-in failed: ${resp.error}`);
+        return;
+      }
+      const expiresAt = Date.now() + (resp.expires_in || 3600) * 1000;
+      storeToken({
+        access_token: resp.access_token,
+        expires_at_ms: expiresAt,
+      });
+      toast("Signed in ✓");
+    },
+  });
+}
+
+function signIn() {
+  if (!tokenClient) {
+    toast("Sign-in not configured (check OAUTH_CLIENT_ID).");
+    return;
+  }
+  tokenClient.requestAccessToken({ prompt: oauthToken ? "" : "consent" });
+}
+
+function signOut() {
+  const t = oauthToken?.access_token;
+  if (t && window.google?.accounts?.oauth2?.revoke) {
+    window.google.accounts.oauth2.revoke(t, () => {});
+  }
+  clearToken();
+  toast("Signed out");
+}
+
+function reflectAuthState() {
+  const signedIn = !!oauthToken?.access_token;
+  $("signin-btn").textContent = signedIn ? "Sign out" : "Sign in";
+  $("viewer-edit").disabled = !signedIn;
+  $("viewer-edit").title = signedIn
+    ? "Edit annotations"
+    : "Sign in to edit";
+  $("new-playlist-btn").disabled = !signedIn;
+}
+
+// ────────────────────────────────────────────────
+// Init
 // ────────────────────────────────────────────────
 async function init() {
+  oauthToken = loadStoredToken();
+  reflectAuthState();
+  initGis();
+
   if (
     !cfg.DRIVE_FOLDER_ID ||
     cfg.DRIVE_FOLDER_ID === "REPLACE_ME_FOLDER_ID" ||
@@ -79,7 +205,6 @@ async function init() {
       );
       return;
     }
-
     await Promise.all([loadLibrary(), loadPlaylists()]);
   } catch (e) {
     console.error(e);
@@ -108,7 +233,6 @@ async function loadPlaylists() {
   const files = (await driveListFolder(plSubfolderId)).filter((f) =>
     /\.json$/i.test(f.name)
   );
-  // Fetch each playlist JSON
   playlists = await Promise.all(
     files.map(async (f) => {
       try {
@@ -120,7 +244,6 @@ async function loadPlaylists() {
       }
     })
   );
-  // Sort newest first
   playlists.sort((a, b) =>
     (b.date || b.name).localeCompare(a.date || a.name)
   );
@@ -134,8 +257,8 @@ function renderLibrary(filter = "") {
   const grid = $("lib-grid");
   const count = $("lib-count");
   const q = filter.toLowerCase().trim();
-  const matches = libFiles.filter((f) =>
-    !q || f.name.toLowerCase().includes(q)
+  const matches = libFiles.filter(
+    (f) => !q || f.name.toLowerCase().includes(q)
   );
   count.textContent = `${matches.length} / ${libFiles.length} song${libFiles.length === 1 ? "" : "s"}`;
   if (matches.length === 0) {
@@ -178,9 +301,6 @@ function renderPlaylists() {
 // ────────────────────────────────────────────────
 // PDF viewer
 // ────────────────────────────────────────────────
-let viewerQueue = []; // ordered list of {file, name}
-let viewerIndex = 0;
-
 async function openSong(file) {
   viewerQueue = [{ file, name: stem(file.name) }];
   viewerIndex = 0;
@@ -219,14 +339,15 @@ async function renderPdf(file) {
   wrap.innerHTML = '<div class="muted small" style="color:#bbb;padding:30px;">Loading…</div>';
   try {
     const buf = await (await fetch(pdfDownloadUrl(file.id))).arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    currentPdfBytes = new Uint8Array(buf);
+    const pdf = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
+    currentPdfDoc = pdf;
     wrap.innerHTML = "";
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d");
       const baseVp = page.getViewport({ scale: 1 });
-      // Fit to viewport width (with reasonable max scale)
       const targetWidth = Math.min(wrap.clientWidth - 20, 1400);
       const scale = targetWidth / baseVp.width;
       const vp = page.getViewport({ scale: scale * (window.devicePixelRatio || 1) });
@@ -244,7 +365,40 @@ async function renderPdf(file) {
 }
 
 // ────────────────────────────────────────────────
-// UI events
+// Edit + Save (Phase 2 — round-trip plumbing)
+// Editor UI tools (text / ink / highlight) come in Phase 2.1.
+// ────────────────────────────────────────────────
+function enterEditMode() {
+  if (!oauthToken?.access_token) {
+    toast("Sign in first.");
+    return;
+  }
+  $("viewer-edit").classList.add("hidden");
+  $("viewer-save").classList.remove("hidden");
+  toast("Edit UI lands in Phase 2.1 — pipeline ready, save will round-trip");
+}
+
+async function saveAndUpload() {
+  if (!oauthToken?.access_token) return toast("Not signed in.");
+  const cur = viewerQueue[viewerIndex];
+  if (!cur || !currentPdfDoc) return;
+  toast("Saving…", 6000);
+  try {
+    // Phase 2.0: pdf.js v4 saveDocument() returns the (possibly modified) PDF.
+    // Without editor UI it returns equivalent bytes — round-trip still works.
+    const bytes = await currentPdfDoc.saveDocument();
+    await uploadPdfBytes(cur.file.id, bytes);
+    toast(`Saved ✓ ${cur.name}`);
+    $("viewer-save").classList.add("hidden");
+    $("viewer-edit").classList.remove("hidden");
+  } catch (e) {
+    console.error(e);
+    toast(`Save failed: ${e.message}`);
+  }
+}
+
+// ────────────────────────────────────────────────
+// UI bindings
 // ────────────────────────────────────────────────
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {
@@ -256,7 +410,6 @@ document.querySelectorAll(".tab").forEach((tab) => {
 });
 
 $("lib-search").addEventListener("input", (e) => renderLibrary(e.target.value));
-
 $("viewer-close").addEventListener("click", () => $("viewer").classList.add("hidden"));
 $("viewer-prev").addEventListener("click", async () => {
   if (viewerIndex > 0) { viewerIndex--; await showCurrent(); }
@@ -264,6 +417,8 @@ $("viewer-prev").addEventListener("click", async () => {
 $("viewer-next").addEventListener("click", async () => {
   if (viewerIndex < viewerQueue.length - 1) { viewerIndex++; await showCurrent(); }
 });
+$("viewer-edit").addEventListener("click", enterEditMode);
+$("viewer-save").addEventListener("click", saveAndUpload);
 
 $("theme-btn").addEventListener("click", () => {
   const cur = document.documentElement.getAttribute("data-theme");
@@ -279,7 +434,8 @@ if (savedTheme) {
 }
 
 $("signin-btn").addEventListener("click", () => {
-  toast("Sign-in (OAuth) lands in Phase 2. Currently read-only.");
+  if (oauthToken?.access_token) signOut();
+  else signIn();
 });
 
 // ────────────────────────────────────────────────
@@ -312,7 +468,6 @@ function toast(msg, ms = 2400) {
   clearTimeout(toast._t);
   toast._t = setTimeout(() => t.classList.add("hidden"), ms);
 }
-
 function showSetupHint() {
   const helpHtml = `
     <div class="empty">
