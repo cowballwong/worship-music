@@ -143,8 +143,15 @@ body {
 .tool-group:last-of-type, .tool-group:not(:has(+ .tool-group)) { border-right: 0; }
 .edit-tool {
   font-size: 18px; padding: 6px 10px; min-width: 38px;
+  border-radius: 8px;
+  border: 2px solid transparent;
 }
-.edit-tool.active { background: var(--accent-soft); color: var(--accent); }
+.edit-tool.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
 .edit-toolbar input[type="color"] {
   width: 28px; height: 28px; border: 1px solid var(--rule); border-radius: 4px; cursor: pointer; padding: 0;
 }
