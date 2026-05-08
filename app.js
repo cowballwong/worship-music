@@ -341,32 +341,39 @@ async function renderPdf(file) {
   const wrap = $("viewer-canvas-wrap");
   wrap.innerHTML = '<div class="muted small" style="color:#bbb;padding:30px;">Loading…</div>';
   try {
-    const buf = await (await fetch(pdfDownloadUrl(file.id))).arrayBuffer();
+    const resp = await fetch(pdfDownloadUrl(file.id));
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+    }
+    const buf = await resp.arrayBuffer();
     currentPdfBytes = new Uint8Array(buf);
-    const pdf = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
-    currentPdfDoc = pdf;
+    // Use the browser's native PDF viewer via blob URL — works reliably on
+    // mobile Chrome / Safari and avoids PDF.js worker / canvas-render issues.
+    // (Custom annotation editor in Phase 2.1 will switch back to PDF.js.)
+    const blob = new Blob([buf], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
     wrap.innerHTML = "";
-    // Robust width: clientWidth can be 0 if wrap not yet laid out — fall back
-    const wrapW = wrap.clientWidth > 100 ? wrap.clientWidth : window.innerWidth;
-    const dpr = window.devicePixelRatio || 1;
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d");
-      const baseVp = page.getViewport({ scale: 1 });
-      const targetWidth = Math.max(320, Math.min(wrapW - 20, 1600));
-      const scale = targetWidth / baseVp.width;
-      const vp = page.getViewport({ scale: scale * dpr });
-      canvas.width = vp.width;
-      canvas.height = vp.height;
-      canvas.style.width = vp.width / dpr + "px";
-      canvas.style.height = vp.height / dpr + "px";
-      await page.render({ canvasContext: ctx, viewport: vp }).promise;
-      wrap.appendChild(canvas);
+    const iframe = document.createElement("iframe");
+    iframe.src = url;
+    iframe.title = stem(file.name);
+    iframe.style.cssText = "width:100%;height:100%;border:0;background:#fff;";
+    iframe.dataset.blobUrl = url;
+    iframe.addEventListener("load", () => {
+      // Revoke earlier so we don't leak — but keep current alive while displayed
+    });
+    wrap.appendChild(iframe);
+
+    // Also keep a parsed pdfDoc handy for Phase 2 saveDocument round-trip
+    try {
+      currentPdfDoc = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
+    } catch (e) {
+      // Non-fatal — viewing still works
+      console.warn("pdfjs parse for save pipeline failed:", e);
+      currentPdfDoc = null;
     }
   } catch (e) {
     console.error(e);
-    wrap.innerHTML = `<div class="empty"><div class="icon">⚠️</div>PDF load failed: ${e.message}</div>`;
+    wrap.innerHTML = `<div class="empty"><div class="icon">⚠️</div>PDF load failed: ${escape(e.message)}</div>`;
   }
 }
 
