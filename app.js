@@ -28,7 +28,7 @@ let editPdfBytes = null;        // current PDF bytes (Uint8Array) for editing
 let editPdfDoc = null;          // pdfjs doc
 let editPageDims = [];          // [{ w, h }] in PDF points (page native)
 let pendingAnnotations = [];    // various types — see types below
-let activeTool = "text";
+let activeTool = "pen";
 let currentDrag = null;         // active drag-tool stroke being drawn
 
 const DRAG_TOOLS = new Set(["pen", "line", "box", "circle", "arrow"]);
@@ -427,8 +427,12 @@ async function enterEditMode() {
 
   editMode = true;
   pendingAnnotations = [];
-  activeTool = "text";
+  activeTool = "pen";
   document.querySelectorAll(".edit-tool").forEach((b) => b.classList.toggle("active", b.dataset.tool === activeTool));
+  document.querySelectorAll(".edit-overlay").forEach((o) => {
+    o.classList.add("drag-mode");
+    o.classList.remove("eraser-mode");
+  });
 
   $("viewer-edit").classList.add("hidden");
   $("viewer-cancel").classList.remove("hidden");
@@ -477,6 +481,11 @@ async function enterEditMode() {
 
       const overlay = document.createElement("div");
       overlay.className = "edit-overlay";
+      // Apply drag/eraser mode class to match the currently-active tool
+      if (DRAG_TOOLS.has(activeTool) || activeTool === "eraser") {
+        overlay.classList.add("drag-mode");
+      }
+      if (activeTool === "eraser") overlay.classList.add("eraser-mode");
       overlay.dataset.page = i;
       overlay.addEventListener("click", (e) => {
         if (currentDrag) return;
