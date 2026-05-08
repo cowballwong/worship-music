@@ -339,42 +339,30 @@ async function showCurrent() {
 
 async function renderPdf(file) {
   const wrap = $("viewer-canvas-wrap");
-  wrap.innerHTML = '<div class="muted small" style="color:#bbb;padding:30px;">Loading…</div>';
-  try {
-    const resp = await fetch(pdfDownloadUrl(file.id));
-    if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
-    }
-    const buf = await resp.arrayBuffer();
-    currentPdfBytes = new Uint8Array(buf);
-    const pdf = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
-    currentPdfDoc = pdf;
+  wrap.innerHTML = "";
+  // Use Google Drive's own viewer iframe — works inline on every platform
+  // including Android Chrome. The file inherits the folder's "anyone with
+  // link" share so no auth headers needed.
+  const iframe = document.createElement("iframe");
+  iframe.src = `https://drive.google.com/file/d/${file.id}/preview`;
+  iframe.title = stem(file.name);
+  iframe.style.cssText = "width:100%;height:100%;border:0;background:#fff;";
+  iframe.allow = "autoplay";
+  wrap.appendChild(iframe);
 
-    wrap.innerHTML = "";
-    // Wait for layout, then measure
-    await new Promise((r) => requestAnimationFrame(r));
-    const wrapW = wrap.clientWidth > 100 ? wrap.clientWidth : window.innerWidth;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2); // cap dpr to avoid huge canvases
-    const targetWidth = Math.max(320, Math.min(wrapW - 16, 1600));
-
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const baseVp = page.getViewport({ scale: 1 });
-      const scale = targetWidth / baseVp.width;
-      const vp = page.getViewport({ scale: scale * dpr });
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d");
-      canvas.width = Math.floor(vp.width);
-      canvas.height = Math.floor(vp.height);
-      canvas.style.width = (vp.width / dpr) + "px";
-      canvas.style.height = (vp.height / dpr) + "px";
-      wrap.appendChild(canvas); // append BEFORE render so dimensions stick
-      await page.render({ canvasContext: ctx, viewport: vp }).promise;
-    }
-  } catch (e) {
-    console.error(e);
-    wrap.innerHTML = `<div class="empty"><div class="icon">⚠️</div>PDF load failed: ${escape(e.message)}</div>`;
-  }
+  // Background-fetch the bytes for the Phase 2 save round-trip (best-effort)
+  fetch(pdfDownloadUrl(file.id))
+    .then((r) => (r.ok ? r.arrayBuffer() : null))
+    .then(async (buf) => {
+      if (!buf) return;
+      currentPdfBytes = new Uint8Array(buf);
+      try {
+        currentPdfDoc = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
+      } catch (e) {
+        console.warn("pdfjs parse failed:", e);
+      }
+    })
+    .catch((e) => console.warn("byte fetch failed:", e));
 }
 
 // ────────────────────────────────────────────────
