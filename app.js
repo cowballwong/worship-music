@@ -2,9 +2,9 @@
 // Editor UI (annotation tools) lands in Phase 2.1 — for now Save uploads
 // the (unmodified) PDF back to verify the round-trip works.
 
-import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/build/pdf.min.mjs";
+import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/legacy/build/pdf.min.mjs";
 pdfjsLib.GlobalWorkerOptions.workerSrc =
-  "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/build/pdf.worker.min.mjs";
+  "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/legacy/build/pdf.worker.min.mjs";
 
 const cfg = window.WORSHIP_CONFIG;
 const $ = (id) => document.getElementById(id);
@@ -347,29 +347,29 @@ async function renderPdf(file) {
     }
     const buf = await resp.arrayBuffer();
     currentPdfBytes = new Uint8Array(buf);
-    // Use the browser's native PDF viewer via blob URL — works reliably on
-    // mobile Chrome / Safari and avoids PDF.js worker / canvas-render issues.
-    // (Custom annotation editor in Phase 2.1 will switch back to PDF.js.)
-    const blob = new Blob([buf], { type: "application/pdf" });
-    const url = URL.createObjectURL(blob);
-    wrap.innerHTML = "";
-    const iframe = document.createElement("iframe");
-    iframe.src = url;
-    iframe.title = stem(file.name);
-    iframe.style.cssText = "width:100%;height:100%;border:0;background:#fff;";
-    iframe.dataset.blobUrl = url;
-    iframe.addEventListener("load", () => {
-      // Revoke earlier so we don't leak — but keep current alive while displayed
-    });
-    wrap.appendChild(iframe);
+    const pdf = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
+    currentPdfDoc = pdf;
 
-    // Also keep a parsed pdfDoc handy for Phase 2 saveDocument round-trip
-    try {
-      currentPdfDoc = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
-    } catch (e) {
-      // Non-fatal — viewing still works
-      console.warn("pdfjs parse for save pipeline failed:", e);
-      currentPdfDoc = null;
+    wrap.innerHTML = "";
+    // Wait for layout, then measure
+    await new Promise((r) => requestAnimationFrame(r));
+    const wrapW = wrap.clientWidth > 100 ? wrap.clientWidth : window.innerWidth;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2); // cap dpr to avoid huge canvases
+    const targetWidth = Math.max(320, Math.min(wrapW - 16, 1600));
+
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const baseVp = page.getViewport({ scale: 1 });
+      const scale = targetWidth / baseVp.width;
+      const vp = page.getViewport({ scale: scale * dpr });
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      canvas.width = Math.floor(vp.width);
+      canvas.height = Math.floor(vp.height);
+      canvas.style.width = (vp.width / dpr) + "px";
+      canvas.style.height = (vp.height / dpr) + "px";
+      wrap.appendChild(canvas); // append BEFORE render so dimensions stick
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
     }
   } catch (e) {
     console.error(e);
