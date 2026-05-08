@@ -73,12 +73,31 @@
 
     <!-- Edit toolbar (hidden until edit mode) -->
     <div id="edit-toolbar" class="edit-toolbar hidden">
-      <button class="btn btn-ghost edit-tool" data-tool="pen">✍️ Pen</button>
-      <button class="btn btn-ghost edit-tool active" data-tool="text">📝 Text</button>
-      <button class="btn btn-ghost edit-tool" data-tool="highlight">🎨 Highlight</button>
-      <input type="color" id="edit-color" value="#cc1f1f" title="Colour">
-      <input type="number" id="edit-fontsize" value="14" min="6" max="48" step="1" title="Font size / Pen width" style="width:60px;">
-      <button id="edit-undo" class="btn btn-ghost" title="Undo last">↶ Undo</button>
+      <div class="tool-group">
+        <button class="btn btn-ghost edit-tool" data-tool="pen" title="Pen / handwriting">✍️</button>
+        <button class="btn btn-ghost edit-tool active" data-tool="text" title="Text">📝</button>
+        <button class="btn btn-ghost edit-tool" data-tool="highlight" title="Highlight (filled rect)">🟨</button>
+        <button class="btn btn-ghost edit-tool" data-tool="line" title="Line">📏</button>
+        <button class="btn btn-ghost edit-tool" data-tool="box" title="Box outline">⬜</button>
+        <button class="btn btn-ghost edit-tool" data-tool="circle" title="Circle / oval">⭕</button>
+        <button class="btn btn-ghost edit-tool" data-tool="arrow" title="Arrow">↘️</button>
+        <button class="btn btn-ghost edit-tool" data-tool="eraser" title="Eraser (tap annotation to remove)">❌</button>
+      </div>
+      <div class="tool-group color-palette" id="color-palette">
+        <button class="color-chip" data-color="#cc1f1f" style="background:#cc1f1f" title="Red"></button>
+        <button class="color-chip" data-color="#1e6fd6" style="background:#1e6fd6" title="Blue"></button>
+        <button class="color-chip" data-color="#1c8a3a" style="background:#1c8a3a" title="Green"></button>
+        <button class="color-chip" data-color="#d6a01e" style="background:#d6a01e" title="Yellow"></button>
+        <button class="color-chip" data-color="#1a1a1a" style="background:#1a1a1a" title="Black"></button>
+        <input type="color" id="edit-color" value="#cc1f1f" title="Custom colour">
+      </div>
+      <div class="tool-group">
+        <button class="btn btn-ghost size-chip" data-size="6" title="Thin">·</button>
+        <button class="btn btn-ghost size-chip active" data-size="14" title="Med">•</button>
+        <button class="btn btn-ghost size-chip" data-size="24" title="Thick">●</button>
+        <input type="number" id="edit-fontsize" value="14" min="6" max="48" step="1" title="Custom size" style="width:50px;">
+      </div>
+      <button id="edit-undo" class="btn btn-ghost" title="Undo last">↶</button>
       <span id="edit-count" class="muted small"></span>
     </div>
 

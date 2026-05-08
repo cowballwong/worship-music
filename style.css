@@ -130,18 +130,40 @@ body {
 .viewer-actions { display: flex; gap: 6px; align-items: center; }
 
 .edit-toolbar {
-  display: flex; gap: 8px; align-items: center;
-  padding: 8px 14px; background: var(--card);
+  display: flex; gap: 10px; align-items: center;
+  padding: 8px 12px; background: var(--card);
   border-bottom: 1px solid var(--rule);
   flex-wrap: wrap;
 }
 .edit-toolbar.hidden { display: none; }
-.edit-tool.active { background: var(--accent-soft); color: var(--accent); }
-.edit-toolbar input[type="color"] { width: 32px; height: 32px; border: 0; cursor: pointer; }
-.edit-toolbar input[type="number"] {
-  border: 1px solid var(--rule); border-radius: 6px; padding: 6px;
-  font: inherit; background: var(--bg); color: var(--ink);
+.tool-group {
+  display: flex; gap: 4px; align-items: center;
+  padding: 0 6px; border-right: 1px solid var(--rule);
 }
+.tool-group:last-of-type, .tool-group:not(:has(+ .tool-group)) { border-right: 0; }
+.edit-tool {
+  font-size: 18px; padding: 6px 10px; min-width: 38px;
+}
+.edit-tool.active { background: var(--accent-soft); color: var(--accent); }
+.edit-toolbar input[type="color"] {
+  width: 28px; height: 28px; border: 1px solid var(--rule); border-radius: 4px; cursor: pointer; padding: 0;
+}
+.edit-toolbar input[type="number"] {
+  border: 1px solid var(--rule); border-radius: 6px; padding: 5px;
+  font: inherit; background: var(--bg); color: var(--ink); font-size: 13px;
+}
+.color-palette { gap: 6px; }
+.color-chip {
+  width: 24px; height: 24px; border-radius: 50%;
+  border: 2px solid var(--rule); cursor: pointer; padding: 0;
+  transition: transform .12s, border-color .12s;
+}
+.color-chip:hover { transform: scale(1.15); }
+.color-chip.active { border-color: var(--ink); transform: scale(1.15); box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); }
+.size-chip {
+  font-size: 22px; line-height: 1; padding: 4px 8px; min-width: 32px;
+}
+.size-chip.active { background: var(--accent-soft); color: var(--accent); }
 
 .viewer-canvas-wrap {
   flex: 1; overflow: auto; background: #2a2622;
@@ -160,13 +182,16 @@ body {
 .edit-overlay {
   position: absolute; inset: 0; cursor: crosshair;
 }
-.edit-overlay.pen-mode {
+.edit-overlay.drag-mode {
   touch-action: none; /* let stylus/finger drag without page scrolling */
 }
+.edit-overlay.eraser-mode { cursor: not-allowed; }
 .edit-overlay svg {
   position: absolute; inset: 0; width: 100%; height: 100%;
   pointer-events: none;
 }
+.edit-overlay svg .erasable { pointer-events: stroke; cursor: pointer; }
+.edit-overlay svg .erasable-fill { pointer-events: visiblePainted; cursor: pointer; }
 .annotation-pin {
   position: absolute; transform: translate(-2px, -50%);
   background: rgba(255,255,255,.95);

@@ -27,9 +27,11 @@ let editMode = false;
 let editPdfBytes = null;        // current PDF bytes (Uint8Array) for editing
 let editPdfDoc = null;          // pdfjs doc
 let editPageDims = [];          // [{ w, h }] in PDF points (page native)
-let pendingAnnotations = [];    // {page, ...} with type 'text' | 'highlight' | 'ink'
+let pendingAnnotations = [];    // various types — see types below
 let activeTool = "text";
-let currentStroke = null;       // active pen stroke being drawn
+let currentDrag = null;         // active drag-tool stroke being drawn
+
+const DRAG_TOOLS = new Set(["pen", "line", "box", "circle", "arrow"]);
 
 // OAuth state
 let oauthToken = null;
@@ -477,10 +479,10 @@ async function enterEditMode() {
       overlay.className = "edit-overlay";
       overlay.dataset.page = i;
       overlay.addEventListener("click", (e) => {
-        if (currentStroke) return; // suppress click after stroke ends
+        if (currentDrag) return;
         onOverlayTap(e, i);
       });
-      attachPenHandlers(overlay, i);
+      attachDrawHandlers(overlay, i);
       container.appendChild(overlay);
 
       wrap.appendChild(container);
@@ -519,46 +521,36 @@ function exitEditUi() {
 
 async function onOverlayTap(e, pageNum) {
   if (!editMode) return;
+  if (DRAG_TOOLS.has(activeTool) || activeTool === "eraser") return; // those use pointer/click on shape
   const overlay = e.currentTarget;
   const rect = overlay.getBoundingClientRect();
   const tapX = e.clientX - rect.left;
   const tapY = e.clientY - rect.top;
-
   const dim = editPageDims[pageNum - 1];
-  // Convert from displayed (CSS) coords to PDF points
-  const cssW = rect.width;
-  const cssH = rect.height;
-  const pdfX = (tapX / cssW) * dim.w;
-  const pdfYTop = (tapY / cssH) * dim.h;
-  const pdfY = dim.h - pdfYTop; // PDF origin is bottom-left
+  const pdfX = (tapX / rect.width) * dim.w;
+  const pdfYTop = (tapY / rect.height) * dim.h;
+  const pdfY = dim.h - pdfYTop;
 
   if (activeTool === "text") {
     const text = prompt("Annotation text 文字 (e.g. Capo 4)", "");
     if (!text || !text.trim()) return;
     const color = $("edit-color").value;
     const size = parseInt($("edit-fontsize").value, 10) || 14;
+    const idx = pendingAnnotations.length;
     pendingAnnotations.push({
-      type: "text",
-      page: pageNum,
-      x: pdfX,
-      y: pdfY,
-      text: text.trim(),
-      color,
-      size,
+      type: "text", page: pageNum, x: pdfX, y: pdfY,
+      text: text.trim(), color, size, idx,
     });
-    addPinDom(overlay, tapX, tapY, text.trim(), color, size, pendingAnnotations.length - 1);
+    addPinDom(overlay, tapX, tapY, text.trim(), color, size, idx);
   } else if (activeTool === "highlight") {
-    const w_pdf = 80, h_pdf = 16; // small default rect
+    const w_pdf = 80, h_pdf = 16;
+    const idx = pendingAnnotations.length;
     pendingAnnotations.push({
-      type: "highlight",
-      page: pageNum,
-      x: pdfX,
-      y: pdfY - h_pdf, // y is bottom edge for highlight
-      w: w_pdf,
-      h: h_pdf,
-      color: $("edit-color").value,
+      type: "highlight", page: pageNum,
+      x: pdfX, y: pdfY - h_pdf, w: w_pdf, h: h_pdf,
+      color: $("edit-color").value, idx,
     });
-    addHighlightDom(overlay, tapX, tapY, $("edit-color").value, pendingAnnotations.length - 1);
+    addHighlightDom(overlay, tapX, tapY, $("edit-color").value, idx);
   }
   updateEditCount();
 }
@@ -602,72 +594,148 @@ function updateEditCount() {
   $("edit-count").textContent = n ? `${n} pending change${n === 1 ? "" : "s"}` : "";
 }
 
-// ────────── PEN ─────────────────────────────────────
-function attachPenHandlers(overlay, pageNum) {
+// ────────── DRAG TOOLS (pen / line / box / circle / arrow) ─────────
+function attachDrawHandlers(overlay, pageNum) {
   overlay.addEventListener("pointerdown", (e) => {
-    if (!editMode || activeTool !== "pen") return;
+    if (!editMode) return;
+    if (!DRAG_TOOLS.has(activeTool)) return;
     e.preventDefault();
     overlay.setPointerCapture(e.pointerId);
     const rect = overlay.getBoundingClientRect();
-    const path = ensureSvgPath(overlay);
-    currentStroke = {
-      pageNum,
-      overlay,
-      points: [{ x: e.clientX - rect.left, y: e.clientY - rect.top }],
-      pathEl: path,
+    const start = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const svgEls = createSvgForTool(overlay, activeTool);
+    currentDrag = {
+      tool: activeTool,
+      pageNum, overlay, rect,
+      points: [start],
+      svgEls,
       color: $("edit-color").value,
-      width: Math.max(1.2, parseInt($("edit-fontsize").value, 10) / 4),
+      width: getPenWidth(),
     };
-    drawPenStroke(currentStroke);
+    updateDragVisual(currentDrag);
   });
   overlay.addEventListener("pointermove", (e) => {
-    if (!currentStroke || currentStroke.overlay !== overlay) return;
-    const rect = overlay.getBoundingClientRect();
-    currentStroke.points.push({
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
-    });
-    drawPenStroke(currentStroke);
+    if (!currentDrag || currentDrag.overlay !== overlay) return;
+    const rect = currentDrag.rect;
+    const p = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    if (currentDrag.tool === "pen") {
+      currentDrag.points.push(p);
+    } else {
+      currentDrag.points = [currentDrag.points[0], p];
+    }
+    updateDragVisual(currentDrag);
   });
   const finalize = (e) => {
-    if (!currentStroke || currentStroke.overlay !== overlay) return;
+    if (!currentDrag || currentDrag.overlay !== overlay) return;
     try { overlay.releasePointerCapture(e.pointerId); } catch {}
-    const stroke = currentStroke;
-    currentStroke = null;
-    if (stroke.points.length < 2) {
-      stroke.pathEl.remove();
+    const d = currentDrag;
+    currentDrag = null;
+    if (d.points.length < 2 || sameSpot(d.points[0], d.points[d.points.length - 1])) {
+      d.svgEls.forEach((el) => el.remove());
       return;
     }
-    finalizeStroke(stroke);
-    setTimeout(() => { /* allow click suppression */ }, 50);
+    finalizeDrag(d);
+    setTimeout(() => {}, 50);
   };
   overlay.addEventListener("pointerup", finalize);
   overlay.addEventListener("pointercancel", finalize);
-  overlay.addEventListener("pointerleave", (e) => {
-    // keep drawing if pointer captured; finalize on actual lift handled above
-  });
 }
 
-function ensureSvgPath(overlay) {
+function sameSpot(a, b) {
+  return Math.abs(a.x - b.x) < 3 && Math.abs(a.y - b.y) < 3;
+}
+
+function getPenWidth() {
+  return Math.max(1, parseInt($("edit-fontsize").value, 10) / 4);
+}
+
+function ensureSvg(overlay) {
   let svg = overlay.querySelector("svg");
   if (!svg) {
     svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     overlay.appendChild(svg);
   }
-  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("fill", "none");
-  path.setAttribute("stroke-linecap", "round");
-  path.setAttribute("stroke-linejoin", "round");
-  svg.appendChild(path);
-  return path;
+  return svg;
 }
 
-function drawPenStroke(s) {
-  if (!s.pathEl) return;
-  const d = pointsToSvgD(s.points);
-  s.pathEl.setAttribute("d", d);
-  s.pathEl.setAttribute("stroke", s.color);
-  s.pathEl.setAttribute("stroke-width", s.width);
+function createSvgForTool(overlay, tool) {
+  const svg = ensureSvg(overlay);
+  const NS = "http://www.w3.org/2000/svg";
+  const els = [];
+  switch (tool) {
+    case "pen": {
+      const p = document.createElementNS(NS, "path");
+      p.setAttribute("fill", "none");
+      p.setAttribute("stroke-linecap", "round");
+      p.setAttribute("stroke-linejoin", "round");
+      svg.appendChild(p);
+      els.push(p);
+      break;
+    }
+    case "line":
+    case "arrow": {
+      const p = document.createElementNS(NS, "path");
+      p.setAttribute("fill", "none");
+      p.setAttribute("stroke-linecap", "round");
+      svg.appendChild(p);
+      els.push(p);
+      break;
+    }
+    case "box": {
+      const r = document.createElementNS(NS, "rect");
+      r.setAttribute("fill", "none");
+      svg.appendChild(r);
+      els.push(r);
+      break;
+    }
+    case "circle": {
+      const e = document.createElementNS(NS, "ellipse");
+      e.setAttribute("fill", "none");
+      svg.appendChild(e);
+      els.push(e);
+      break;
+    }
+  }
+  return els;
+}
+
+function updateDragVisual(d) {
+  const [el] = d.svgEls;
+  el.setAttribute("stroke", d.color);
+  el.setAttribute("stroke-width", d.width);
+  if (d.tool === "pen") {
+    el.setAttribute("d", pointsToSvgD(d.points));
+  } else if (d.tool === "line") {
+    const p1 = d.points[0], p2 = d.points[d.points.length - 1];
+    el.setAttribute("d", `M ${p1.x} ${p1.y} L ${p2.x} ${p2.y}`);
+  } else if (d.tool === "arrow") {
+    const p1 = d.points[0], p2 = d.points[d.points.length - 1];
+    el.setAttribute("d", arrowPath(p1, p2));
+  } else if (d.tool === "box") {
+    const p1 = d.points[0], p2 = d.points[d.points.length - 1];
+    const x = Math.min(p1.x, p2.x), y = Math.min(p1.y, p2.y);
+    el.setAttribute("x", x); el.setAttribute("y", y);
+    el.setAttribute("width", Math.abs(p2.x - p1.x));
+    el.setAttribute("height", Math.abs(p2.y - p1.y));
+  } else if (d.tool === "circle") {
+    const p1 = d.points[0], p2 = d.points[d.points.length - 1];
+    el.setAttribute("cx", (p1.x + p2.x) / 2);
+    el.setAttribute("cy", (p1.y + p2.y) / 2);
+    el.setAttribute("rx", Math.abs(p2.x - p1.x) / 2);
+    el.setAttribute("ry", Math.abs(p2.y - p1.y) / 2);
+  }
+}
+
+function arrowPath(p1, p2) {
+  const dx = p2.x - p1.x, dy = p2.y - p1.y;
+  const len = Math.hypot(dx, dy);
+  const ang = Math.atan2(dy, dx);
+  const head = Math.min(16, len * 0.25);
+  const a1x = p2.x - head * Math.cos(ang - Math.PI / 6);
+  const a1y = p2.y - head * Math.sin(ang - Math.PI / 6);
+  const a2x = p2.x - head * Math.cos(ang + Math.PI / 6);
+  const a2y = p2.y - head * Math.sin(ang + Math.PI / 6);
+  return `M ${p1.x} ${p1.y} L ${p2.x} ${p2.y} M ${a1x} ${a1y} L ${p2.x} ${p2.y} L ${a2x} ${a2y}`;
 }
 
 function pointsToSvgD(pts) {
@@ -679,34 +747,57 @@ function pointsToSvgD(pts) {
   return d;
 }
 
-function finalizeStroke(stroke) {
-  const overlay = stroke.overlay;
-  const rect = overlay.getBoundingClientRect();
-  const dim = editPageDims[stroke.pageNum - 1];
+function finalizeDrag(d) {
+  const overlay = d.overlay, rect = d.rect;
+  const dim = editPageDims[d.pageNum - 1];
   const cssW = rect.width, cssH = rect.height;
-  const pdfPoints = stroke.points.map((p) => ({
-    x: (p.x / cssW) * dim.w,
-    y: dim.h - (p.y / cssH) * dim.h,
-  }));
+  const sx = dim.w / cssW, sy = dim.h / cssH;
+  const flip = (p) => ({ x: p.x * sx, y: dim.h - p.y * sy });
+  const pdfWidth = d.width * sx;
+
   const idx = pendingAnnotations.length;
-  pendingAnnotations.push({
-    type: "ink",
-    page: stroke.pageNum,
-    points: pdfPoints,
-    color: stroke.color,
-    width: (stroke.width / cssW) * dim.w, // scale width to PDF units
-    domRef: stroke.pathEl,
-    idx,
-  });
-  stroke.pathEl.dataset.idx = idx;
-  stroke.pathEl.style.pointerEvents = "stroke";
-  stroke.pathEl.style.cursor = "pointer";
-  stroke.pathEl.addEventListener("click", (e) => {
-    e.stopPropagation();
-    const i = parseInt(stroke.pathEl.dataset.idx, 10);
+  let ann;
+  if (d.tool === "pen") {
+    ann = { type: "ink", page: d.pageNum, points: d.points.map(flip), color: d.color, width: pdfWidth, idx };
+  } else if (d.tool === "line") {
+    const [p1, p2] = [d.points[0], d.points.at(-1)];
+    ann = { type: "line", page: d.pageNum, p1: flip(p1), p2: flip(p2), color: d.color, width: pdfWidth, idx };
+  } else if (d.tool === "arrow") {
+    const [p1, p2] = [d.points[0], d.points.at(-1)];
+    ann = { type: "arrow", page: d.pageNum, p1: flip(p1), p2: flip(p2), color: d.color, width: pdfWidth, idx };
+  } else if (d.tool === "box") {
+    const [p1, p2] = [d.points[0], d.points.at(-1)];
+    const xCss = Math.min(p1.x, p2.x), yCssTop = Math.min(p1.y, p2.y);
+    const wCss = Math.abs(p2.x - p1.x), hCss = Math.abs(p2.y - p1.y);
+    const xPdf = xCss * sx;
+    const yPdf = dim.h - (yCssTop + hCss) * sy; // bottom-left
+    ann = {
+      type: "box", page: d.pageNum,
+      x: xPdf, y: yPdf, w: wCss * sx, h: hCss * sy,
+      color: d.color, width: pdfWidth, idx,
+    };
+  } else if (d.tool === "circle") {
+    const [p1, p2] = [d.points[0], d.points.at(-1)];
+    const cxCss = (p1.x + p2.x) / 2, cyCss = (p1.y + p2.y) / 2;
+    const rx = Math.abs(p2.x - p1.x) / 2, ry = Math.abs(p2.y - p1.y) / 2;
+    ann = {
+      type: "circle", page: d.pageNum,
+      cx: cxCss * sx, cy: dim.h - cyCss * sy,
+      rx: rx * sx, ry: ry * sy,
+      color: d.color, width: pdfWidth, idx,
+    };
+  }
+  pendingAnnotations.push(ann);
+
+  const el = d.svgEls[0];
+  el.dataset.idx = idx;
+  el.classList.add(d.tool === "box" || d.tool === "circle" ? "erasable-fill" : "erasable");
+  el.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    const i = parseInt(el.dataset.idx, 10);
     if (Number.isNaN(i)) return;
     pendingAnnotations[i] = null;
-    stroke.pathEl.remove();
+    d.svgEls.forEach((x) => x.remove());
     updateEditCount();
   });
   updateEditCount();
@@ -755,7 +846,6 @@ async function saveAndUpload() {
           opacity: 0.35,
         });
       } else if (a.type === "ink") {
-        // Draw stroke as series of line segments (Round line cap for smoothness)
         for (let i = 1; i < a.points.length; i++) {
           page.drawLine({
             start: { x: a.points[i - 1].x, y: a.points[i - 1].y },
@@ -765,6 +855,45 @@ async function saveAndUpload() {
             lineCap: window.PDFLib.LineCapStyle.Round,
           });
         }
+      } else if (a.type === "line") {
+        page.drawLine({
+          start: a.p1, end: a.p2,
+          thickness: Math.max(0.8, a.width),
+          color: rgb(c.r, c.g, c.b),
+          lineCap: window.PDFLib.LineCapStyle.Round,
+        });
+      } else if (a.type === "arrow") {
+        page.drawLine({
+          start: a.p1, end: a.p2,
+          thickness: Math.max(0.8, a.width),
+          color: rgb(c.r, c.g, c.b),
+          lineCap: window.PDFLib.LineCapStyle.Round,
+        });
+        const dx = a.p2.x - a.p1.x, dy = a.p2.y - a.p1.y;
+        const len = Math.hypot(dx, dy);
+        const ang = Math.atan2(dy, dx);
+        const head = Math.min(18, len * 0.25);
+        const t = Math.max(0.8, a.width);
+        const cosA = Math.cos, sinA = Math.sin;
+        const a1 = { x: a.p2.x - head * cosA(ang - Math.PI / 6), y: a.p2.y - head * sinA(ang - Math.PI / 6) };
+        const a2 = { x: a.p2.x - head * cosA(ang + Math.PI / 6), y: a.p2.y - head * sinA(ang + Math.PI / 6) };
+        page.drawLine({ start: a1, end: a.p2, thickness: t, color: rgb(c.r, c.g, c.b), lineCap: window.PDFLib.LineCapStyle.Round });
+        page.drawLine({ start: a2, end: a.p2, thickness: t, color: rgb(c.r, c.g, c.b), lineCap: window.PDFLib.LineCapStyle.Round });
+      } else if (a.type === "box") {
+        page.drawRectangle({
+          x: a.x, y: a.y, width: a.w, height: a.h,
+          borderColor: rgb(c.r, c.g, c.b),
+          borderWidth: Math.max(0.8, a.width),
+          color: undefined, opacity: 0,
+        });
+      } else if (a.type === "circle") {
+        page.drawEllipse({
+          x: a.cx, y: a.cy,
+          xScale: Math.max(1, a.rx), yScale: Math.max(1, a.ry),
+          borderColor: rgb(c.r, c.g, c.b),
+          borderWidth: Math.max(0.8, a.width),
+          color: undefined, opacity: 0,
+        });
       }
     }
 
@@ -974,17 +1103,40 @@ document.querySelectorAll(".edit-tool").forEach((b) =>
   b.addEventListener("click", () => {
     activeTool = b.dataset.tool;
     document.querySelectorAll(".edit-tool").forEach((x) => x.classList.toggle("active", x === b));
-    document.querySelectorAll(".edit-overlay").forEach((o) =>
-      o.classList.toggle("pen-mode", activeTool === "pen")
-    );
+    document.querySelectorAll(".edit-overlay").forEach((o) => {
+      o.classList.toggle("drag-mode", DRAG_TOOLS.has(activeTool));
+      o.classList.toggle("eraser-mode", activeTool === "eraser");
+    });
   })
 );
+
+document.querySelectorAll(".color-chip").forEach((c) => {
+  c.addEventListener("click", () => {
+    const v = c.dataset.color;
+    $("edit-color").value = v;
+    document.querySelectorAll(".color-chip").forEach((x) => x.classList.toggle("active", x === c));
+  });
+});
+$("edit-color").addEventListener("input", () => {
+  document.querySelectorAll(".color-chip").forEach((x) => x.classList.remove("active"));
+});
+
+document.querySelectorAll(".size-chip").forEach((c) => {
+  c.addEventListener("click", () => {
+    $("edit-fontsize").value = c.dataset.size;
+    document.querySelectorAll(".size-chip").forEach((x) => x.classList.toggle("active", x === c));
+  });
+});
+$("edit-fontsize").addEventListener("input", () => {
+  document.querySelectorAll(".size-chip").forEach((x) => x.classList.remove("active"));
+});
 $("edit-undo").addEventListener("click", () => {
   for (let i = pendingAnnotations.length - 1; i >= 0; i--) {
     if (pendingAnnotations[i]) {
       pendingAnnotations[i] = null;
-      // remove DOM (pins / highlight rects / SVG paths)
-      document.querySelectorAll(".annotation-pin, .edit-overlay > div, .edit-overlay svg path").forEach((el) => {
+      document.querySelectorAll(
+        ".annotation-pin, .edit-overlay > div, .edit-overlay svg path, .edit-overlay svg rect, .edit-overlay svg ellipse"
+      ).forEach((el) => {
         if (parseInt(el.dataset.idx, 10) === i) el.remove();
       });
       updateEditCount();
