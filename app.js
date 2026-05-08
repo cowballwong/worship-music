@@ -521,7 +521,14 @@ function exitEditUi() {
 
 async function onOverlayTap(e, pageNum) {
   if (!editMode) return;
-  if (DRAG_TOOLS.has(activeTool) || activeTool === "eraser") return; // those use pointer/click on shape
+
+  // Eraser: find nearest annotation to click and remove it
+  if (activeTool === "eraser") {
+    eraseAtPoint(e.currentTarget, e.clientX, e.clientY);
+    return;
+  }
+
+  if (DRAG_TOOLS.has(activeTool)) return; // drag tools use pointerdown
   const overlay = e.currentTarget;
   const rect = overlay.getBoundingClientRect();
   const tapX = e.clientX - rect.left;
@@ -592,6 +599,34 @@ function addHighlightDom(overlay, cssX, cssY, color, idx) {
 function updateEditCount() {
   const n = pendingAnnotations.filter(Boolean).length;
   $("edit-count").textContent = n ? `${n} pending change${n === 1 ? "" : "s"}` : "";
+}
+
+// ────────── ERASER ───────────────────────────────
+function eraseAtPoint(overlay, clientX, clientY) {
+  // Find all annotation DOM nodes inside this overlay that have data-idx,
+  // pick the one whose (inflated) bounding box contains the click.
+  // Prefer the smallest matching box so we don't grab a giant ink stroke
+  // when there's a tiny pin underneath.
+  const candidates = [];
+  overlay.querySelectorAll("[data-idx]").forEach((el) => {
+    const idx = parseInt(el.dataset.idx, 10);
+    if (Number.isNaN(idx) || !pendingAnnotations[idx]) return;
+    const r = el.getBoundingClientRect();
+    const pad = 10;
+    if (
+      clientX >= r.left - pad && clientX <= r.right + pad &&
+      clientY >= r.top - pad && clientY <= r.bottom + pad
+    ) {
+      candidates.push({ el, idx, area: (r.right - r.left) * (r.bottom - r.top) });
+    }
+  });
+  if (candidates.length === 0) return;
+  candidates.sort((a, b) => a.area - b.area); // smallest first
+  const chosen = candidates[0];
+  pendingAnnotations[chosen.idx] = null;
+  // Remove all DOM nodes that share this idx (e.g. arrow's two svg parts)
+  overlay.querySelectorAll(`[data-idx="${chosen.idx}"]`).forEach((el) => el.remove());
+  updateEditCount();
 }
 
 // ────────── DRAG TOOLS (pen / line / box / circle / arrow) ─────────
