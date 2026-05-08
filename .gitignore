@@ -1,0 +1,8 @@
+# Local dev
+.vscode/
+.idea/
+*.local
+
+# OS
+.DS_Store
+Thumbs.db

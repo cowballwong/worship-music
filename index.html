@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-Hant" data-theme="day">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Worship Music · 樂譜</title>
+<meta name="description" content="Personal worship music sheet library — Drive-backed, mobile-first, edit + save annotations.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@400;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<!-- PDF.js v4 -->
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/build/pdf.min.mjs" type="module"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🎸</span>
+      <h1>Worship Music</h1>
+      <span class="subtitle">樂譜庫</span>
+    </div>
+    <div class="topbar-actions">
+      <button id="signin-btn" class="btn btn-ghost" title="Sign in to enable editing">Sign in</button>
+      <button id="theme-btn" class="btn btn-ghost" aria-label="Toggle theme" title="Toggle day/night">🌙</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-view="library">📚 Library <span class="zh">樂譜</span></button>
+    <button class="tab" data-view="playlists">📅 Playlists <span class="zh">主日</span></button>
+  </nav>
+
+  <main class="content">
+    <!-- LIBRARY view -->
+    <section id="view-library" class="view active">
+      <div class="search-row">
+        <input id="lib-search" class="search" type="search" placeholder="Search song… 搜尋樂譜" autocomplete="off">
+        <span id="lib-count" class="muted">—</span>
+      </div>
+      <div id="lib-grid" class="grid"></div>
+    </section>
+
+    <!-- PLAYLISTS view -->
+    <section id="view-playlists" class="view">
+      <div class="search-row">
+        <h2 class="muted small">Sunday Sets · 主日歌單</h2>
+        <button id="new-playlist-btn" class="btn btn-ghost" disabled title="Sign in to create">＋ New</button>
+      </div>
+      <div id="playlist-list" class="playlist-list"></div>
+    </section>
+  </main>
+
+  <!-- PDF Viewer modal -->
+  <div id="viewer" class="viewer hidden">
+    <header class="viewer-bar">
+      <button id="viewer-close" class="btn btn-ghost" aria-label="Close">✕</button>
+      <div class="viewer-title">
+        <span id="viewer-name">—</span>
+        <span id="viewer-progress" class="muted small"></span>
+      </div>
+      <div class="viewer-actions">
+        <button id="viewer-prev" class="btn btn-ghost" aria-label="Previous">←</button>
+        <button id="viewer-next" class="btn btn-ghost" aria-label="Next">→</button>
+        <button id="viewer-edit" class="btn btn-primary" disabled title="Sign in to edit">✏️ Edit</button>
+        <button id="viewer-save" class="btn btn-primary hidden">💾 Save</button>
+      </div>
+    </header>
+    <div id="viewer-canvas-wrap" class="viewer-canvas-wrap">
+      <!-- pdf.js canvas inserted here -->
+    </div>
+  </div>
+
+  <!-- Status / toast -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="config.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
