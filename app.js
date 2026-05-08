@@ -304,8 +304,10 @@ function renderPlaylists() {
 async function openSong(file) {
   viewerQueue = [{ file, name: stem(file.name) }];
   viewerIndex = 0;
-  await showCurrent();
   $("viewer").classList.remove("hidden");
+  // Wait one frame so the viewer is laid out before we measure clientWidth
+  await new Promise((r) => requestAnimationFrame(r));
+  await showCurrent();
 }
 
 async function openPlaylist(p) {
@@ -319,8 +321,9 @@ async function openPlaylist(p) {
   }
   viewerQueue = songs;
   viewerIndex = 0;
-  await showCurrent();
   $("viewer").classList.remove("hidden");
+  await new Promise((r) => requestAnimationFrame(r));
+  await showCurrent();
 }
 
 async function showCurrent() {
@@ -343,18 +346,21 @@ async function renderPdf(file) {
     const pdf = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
     currentPdfDoc = pdf;
     wrap.innerHTML = "";
+    // Robust width: clientWidth can be 0 if wrap not yet laid out — fall back
+    const wrapW = wrap.clientWidth > 100 ? wrap.clientWidth : window.innerWidth;
+    const dpr = window.devicePixelRatio || 1;
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d");
       const baseVp = page.getViewport({ scale: 1 });
-      const targetWidth = Math.min(wrap.clientWidth - 20, 1400);
+      const targetWidth = Math.max(320, Math.min(wrapW - 20, 1600));
       const scale = targetWidth / baseVp.width;
-      const vp = page.getViewport({ scale: scale * (window.devicePixelRatio || 1) });
+      const vp = page.getViewport({ scale: scale * dpr });
       canvas.width = vp.width;
       canvas.height = vp.height;
-      canvas.style.width = vp.width / (window.devicePixelRatio || 1) + "px";
-      canvas.style.height = vp.height / (window.devicePixelRatio || 1) + "px";
+      canvas.style.width = vp.width / dpr + "px";
+      canvas.style.height = vp.height / dpr + "px";
       await page.render({ canvasContext: ctx, viewport: vp }).promise;
       wrap.appendChild(canvas);
     }
