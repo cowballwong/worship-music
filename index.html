@@ -9,8 +9,10 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@400;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
-<!-- PDF.js v4 -->
-<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/build/pdf.min.mjs" type="module"></script>
+<!-- PDF.js v4 (legacy ESM build for broad mobile compat) -->
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/legacy/build/pdf.min.mjs" type="module"></script>
+<!-- pdf-lib for PDF mutation (FreeText annotations) -->
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
 <!-- Google Identity Services (OAuth) -->
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
@@ -64,11 +66,50 @@
         <button id="viewer-prev" class="btn btn-ghost" aria-label="Previous">←</button>
         <button id="viewer-next" class="btn btn-ghost" aria-label="Next">→</button>
         <button id="viewer-edit" class="btn btn-primary" disabled title="Sign in to edit">✏️ Edit</button>
+        <button id="viewer-cancel" class="btn btn-ghost hidden">Cancel</button>
         <button id="viewer-save" class="btn btn-primary hidden">💾 Save</button>
       </div>
     </header>
-    <div id="viewer-canvas-wrap" class="viewer-canvas-wrap">
-      <!-- pdf.js canvas inserted here -->
+
+    <!-- Edit toolbar (hidden until edit mode) -->
+    <div id="edit-toolbar" class="edit-toolbar hidden">
+      <button class="btn btn-ghost edit-tool active" data-tool="text">📝 Text</button>
+      <button class="btn btn-ghost edit-tool" data-tool="highlight">🎨 Highlight</button>
+      <input type="color" id="edit-color" value="#cc1f1f" title="Colour">
+      <input type="number" id="edit-fontsize" value="14" min="8" max="48" step="1" title="Font size" style="width:60px;">
+      <button id="edit-undo" class="btn btn-ghost" title="Undo last">↶ Undo</button>
+      <span id="edit-count" class="muted small"></span>
+    </div>
+
+    <div id="viewer-canvas-wrap" class="viewer-canvas-wrap"></div>
+  </div>
+
+  <!-- Playlist editor modal -->
+  <div id="pl-editor" class="viewer hidden">
+    <header class="viewer-bar">
+      <button id="pl-close" class="btn btn-ghost" aria-label="Close">✕</button>
+      <div class="viewer-title">
+        <span>Playlist Editor · 歌單</span>
+      </div>
+      <div class="viewer-actions">
+        <button id="pl-delete" class="btn btn-ghost" title="Delete playlist">🗑️</button>
+        <button id="pl-save" class="btn btn-primary">💾 Save</button>
+      </div>
+    </header>
+    <div class="pl-edit-body">
+      <div class="pl-fields">
+        <label>Date <input id="pl-date" type="date"></label>
+        <label>Title <input id="pl-title" type="text" placeholder="Sunday Service"></label>
+        <label>Notes <input id="pl-notes" type="text" placeholder="optional"></label>
+      </div>
+      <div class="pl-songs">
+        <h3>Songs <span class="muted small">tap to remove · drag to reorder</span></h3>
+        <ul id="pl-songs-list" class="pl-songs-list"></ul>
+        <div class="pl-add">
+          <input id="pl-song-search" type="search" placeholder="Add song from library… 加歌">
+          <div id="pl-song-suggest" class="pl-suggest"></div>
+        </div>
+      </div>
     </div>
   </div>
 
