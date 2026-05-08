@@ -16,5 +16,5 @@ window.WORSHIP_CONFIG = {
   // Google OAuth Client ID (Cloud Console → Credentials → OAuth 2.0 Client ID)
   // Used for write access (saving annotations + playlist edits)
   // Authorised origins should include: https://cowballwong.github.io
-  OAUTH_CLIENT_ID: "REPLACE_ME_CLIENT_ID.apps.googleusercontent.com",
+  OAUTH_CLIENT_ID: "250700706532-fqrs6ev69h555unqbn97quqlu22aac48.apps.googleusercontent.com",
 };
