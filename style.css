@@ -185,7 +185,8 @@ body {
 .edit-overlay.drag-mode {
   touch-action: none; /* let stylus/finger drag without page scrolling */
 }
-.edit-overlay.eraser-mode { cursor: not-allowed; }
+.edit-overlay.eraser-mode { cursor: cell; }
+.eraser-cursor { /* set inline by JS */ }
 .edit-overlay svg {
   position: absolute; inset: 0; width: 100%; height: 100%;
   pointer-events: none;

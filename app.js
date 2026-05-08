@@ -521,13 +521,7 @@ function exitEditUi() {
 
 async function onOverlayTap(e, pageNum) {
   if (!editMode) return;
-
-  // Eraser: find nearest annotation to click and remove it
-  if (activeTool === "eraser") {
-    eraseAtPoint(e.currentTarget, e.clientX, e.clientY);
-    return;
-  }
-
+  if (activeTool === "eraser") return; // eraser uses pointerdown drag
   if (DRAG_TOOLS.has(activeTool)) return; // drag tools use pointerdown
   const overlay = e.currentTarget;
   const rect = overlay.getBoundingClientRect();
@@ -601,49 +595,140 @@ function updateEditCount() {
   $("edit-count").textContent = n ? `${n} pending change${n === 1 ? "" : "s"}` : "";
 }
 
-// ────────── ERASER ───────────────────────────────
-function eraseAtPoint(overlay, clientX, clientY) {
-  // Find all annotation DOM nodes inside this overlay that have data-idx,
-  // pick the one whose (inflated) bounding box contains the click.
-  // Prefer the smallest matching box so we don't grab a giant ink stroke
-  // when there's a tiny pin underneath.
-  const candidates = [];
-  overlay.querySelectorAll("[data-idx]").forEach((el) => {
-    const idx = parseInt(el.dataset.idx, 10);
-    if (Number.isNaN(idx) || !pendingAnnotations[idx]) return;
-    const r = el.getBoundingClientRect();
-    const pad = 10;
-    if (
-      clientX >= r.left - pad && clientX <= r.right + pad &&
-      clientY >= r.top - pad && clientY <= r.bottom + pad
-    ) {
-      candidates.push({ el, idx, area: (r.right - r.left) * (r.bottom - r.top) });
+// ────────── ERASER (pixel-style) ───────────────────────────────
+// Drag the eraser; ink strokes get partially-erased point-by-point and
+// split into surviving fragments. Other shapes are removed if the eraser
+// passes over their bounding box.
+function eraserRadiusPx() {
+  const sz = parseInt($("edit-fontsize").value, 10) || 14;
+  // map font/size to a usable eraser radius (px)
+  return Math.max(8, sz * 1.4);
+}
+
+function eraseSwipe(overlay, pageNum, cssX, cssY) {
+  const rect = overlay.getBoundingClientRect();
+  const dim = editPageDims[pageNum - 1];
+  const radius = eraserRadiusPx();
+  const r2 = radius * radius;
+
+  // For each ink annotation: convert its PDF points to CSS, find points
+  // inside the eraser radius, drop them, and split the stroke into surviving
+  // contiguous runs.
+  for (let i = 0; i < pendingAnnotations.length; i++) {
+    const a = pendingAnnotations[i];
+    if (!a || a.page !== pageNum) continue;
+
+    if (a.type === "ink") {
+      const cssPts = a.points.map((p) => ({
+        x: (p.x / dim.w) * rect.width,
+        y: ((dim.h - p.y) / dim.h) * rect.height,
+      }));
+      const erased = cssPts.map((p) => {
+        const dx = p.x - cssX, dy = p.y - cssY;
+        return dx * dx + dy * dy <= r2;
+      });
+      if (!erased.some(Boolean)) continue;
+
+      // Build surviving runs
+      const runs = [];
+      let cur = [];
+      for (let j = 0; j < cssPts.length; j++) {
+        if (erased[j]) {
+          if (cur.length > 1) runs.push(cur);
+          cur = [];
+        } else {
+          cur.push(j);
+        }
+      }
+      if (cur.length > 1) runs.push(cur);
+
+      // Remove old annotation and its DOM
+      pendingAnnotations[i] = null;
+      overlay.querySelectorAll(`[data-idx="${i}"]`).forEach((el) => el.remove());
+
+      // Add new sub-annotations for surviving runs
+      for (const run of runs) {
+        const newIdx = pendingAnnotations.length;
+        const newPts = run.map((j) => a.points[j]);
+        pendingAnnotations.push({ ...a, points: newPts, idx: newIdx });
+        // Render
+        const NS = "http://www.w3.org/2000/svg";
+        const svg = ensureSvg(overlay);
+        const path = document.createElementNS(NS, "path");
+        path.setAttribute("fill", "none");
+        path.setAttribute("stroke-linecap", "round");
+        path.setAttribute("stroke-linejoin", "round");
+        path.setAttribute("stroke", a.color);
+        path.setAttribute("stroke-width", String(a.width * (rect.width / dim.w)));
+        const cssAgain = newPts.map((p) => ({
+          x: (p.x / dim.w) * rect.width,
+          y: ((dim.h - p.y) / dim.h) * rect.height,
+        }));
+        path.setAttribute("d", pointsToSvgD(cssAgain));
+        path.dataset.idx = newIdx;
+        path.classList.add("erasable");
+        svg.appendChild(path);
+      }
+    } else {
+      // Object-erase for non-ink shapes
+      const els = overlay.querySelectorAll(`[data-idx="${i}"]`);
+      let hit = false;
+      els.forEach((el) => {
+        const er = el.getBoundingClientRect();
+        const left = er.left - rect.left, top = er.top - rect.top;
+        const right = er.right - rect.left, bot = er.bottom - rect.top;
+        if (cssX + radius >= left && cssX - radius <= right &&
+            cssY + radius >= top && cssY - radius <= bot) {
+          hit = true;
+        }
+      });
+      if (hit) {
+        pendingAnnotations[i] = null;
+        els.forEach((el) => el.remove());
+      }
     }
-  });
-  if (candidates.length === 0) return;
-  candidates.sort((a, b) => a.area - b.area); // smallest first
-  const chosen = candidates[0];
-  pendingAnnotations[chosen.idx] = null;
-  // Remove all DOM nodes that share this idx (e.g. arrow's two svg parts)
-  overlay.querySelectorAll(`[data-idx="${chosen.idx}"]`).forEach((el) => el.remove());
+  }
   updateEditCount();
 }
 
-// ────────── DRAG TOOLS (pen / line / box / circle / arrow) ─────────
+function ensureEraserCursor(overlay) {
+  let c = overlay.querySelector(".eraser-cursor");
+  if (!c) {
+    c = document.createElement("div");
+    c.className = "eraser-cursor";
+    overlay.appendChild(c);
+  }
+  return c;
+}
+function moveEraserCursor(c, cssX, cssY, radius) {
+  c.style.cssText = `
+    position:absolute;left:${cssX - radius}px;top:${cssY - radius}px;
+    width:${radius * 2}px;height:${radius * 2}px;
+    border:2px dashed rgba(120,120,120,.85);background:rgba(255,255,255,.18);
+    border-radius:50%;pointer-events:none;`;
+}
+
+// ────────── DRAG TOOLS (pen / line / box / circle / arrow / eraser) ─────────
 function attachDrawHandlers(overlay, pageNum) {
   overlay.addEventListener("pointerdown", (e) => {
     if (!editMode) return;
-    if (!DRAG_TOOLS.has(activeTool)) return;
+    const isEraser = activeTool === "eraser";
+    if (!DRAG_TOOLS.has(activeTool) && !isEraser) return;
     e.preventDefault();
     overlay.setPointerCapture(e.pointerId);
     const rect = overlay.getBoundingClientRect();
     const start = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    if (isEraser) {
+      currentDrag = { tool: "eraser", pageNum, overlay, rect };
+      const c = ensureEraserCursor(overlay);
+      moveEraserCursor(c, start.x, start.y, eraserRadiusPx());
+      eraseSwipe(overlay, pageNum, start.x, start.y);
+      return;
+    }
     const svgEls = createSvgForTool(overlay, activeTool);
     currentDrag = {
-      tool: activeTool,
-      pageNum, overlay, rect,
-      points: [start],
-      svgEls,
+      tool: activeTool, pageNum, overlay, rect,
+      points: [start], svgEls,
       color: $("edit-color").value,
       width: getPenWidth(),
     };
@@ -653,6 +738,12 @@ function attachDrawHandlers(overlay, pageNum) {
     if (!currentDrag || currentDrag.overlay !== overlay) return;
     const rect = currentDrag.rect;
     const p = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    if (currentDrag.tool === "eraser") {
+      const c = overlay.querySelector(".eraser-cursor");
+      if (c) moveEraserCursor(c, p.x, p.y, eraserRadiusPx());
+      eraseSwipe(overlay, pageNum, p.x, p.y);
+      return;
+    }
     if (currentDrag.tool === "pen") {
       currentDrag.points.push(p);
     } else {
@@ -665,6 +756,11 @@ function attachDrawHandlers(overlay, pageNum) {
     try { overlay.releasePointerCapture(e.pointerId); } catch {}
     const d = currentDrag;
     currentDrag = null;
+    if (d.tool === "eraser") {
+      const c = overlay.querySelector(".eraser-cursor");
+      if (c) c.remove();
+      return;
+    }
     if (d.points.length < 2 || sameSpot(d.points[0], d.points[d.points.length - 1])) {
       d.svgEls.forEach((el) => el.remove());
       return;
@@ -1139,7 +1235,7 @@ document.querySelectorAll(".edit-tool").forEach((b) =>
     activeTool = b.dataset.tool;
     document.querySelectorAll(".edit-tool").forEach((x) => x.classList.toggle("active", x === b));
     document.querySelectorAll(".edit-overlay").forEach((o) => {
-      o.classList.toggle("drag-mode", DRAG_TOOLS.has(activeTool));
+      o.classList.toggle("drag-mode", DRAG_TOOLS.has(activeTool) || activeTool === "eraser");
       o.classList.toggle("eraser-mode", activeTool === "eraser");
     });
   })
