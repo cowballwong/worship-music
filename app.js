@@ -1284,10 +1284,15 @@ function activateTab(view) {
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => activateTab(tab.dataset.view));
 });
-// Restore last-selected tab on load
+// Restore last-selected tab on load — and capture the default on first visit
 try {
   const last = localStorage.getItem("ws_tab");
-  if (last === "library" || last === "playlists") activateTab(last);
+  if (last === "library" || last === "playlists") {
+    activateTab(last);
+  } else {
+    const initActive = document.querySelector(".tab.active")?.dataset.view;
+    if (initActive) localStorage.setItem("ws_tab", initActive);
+  }
 } catch {}
 
 $("lib-search").addEventListener("input", (e) => renderLibrary(e.target.value));
