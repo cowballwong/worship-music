@@ -98,6 +98,12 @@ body {
   font-size: 11px; padding: 4px 8px; border-radius: 999px;
   background: var(--accent-soft); color: var(--accent); cursor: pointer;
 }
+.playlist-card .pl-export-pill {
+  position: absolute; top: 10px; right: 70px;
+  font-size: 11px; padding: 4px 8px; border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent); cursor: pointer;
+}
+.playlist-card:not(:has(.pl-edit-pill)) .pl-export-pill { right: 10px; }
 
 .btn {
   background: transparent; border: 1px solid transparent;

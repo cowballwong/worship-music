@@ -355,16 +355,71 @@ function renderPlaylists() {
       <div class="date">${escape(p.date || stem(p.name))}</div>
       <div class="title">${escape(p.title || "Sunday Set")}</div>
       <div class="songs">${escape((p.songs || []).join(" · "))}</div>
+      <div class="pl-export-pill" data-export="1" title="Download combined PDF">📥 PDF</div>
       ${oauthToken ? `<div class="pl-edit-pill" data-edit="1">✏️ Edit</div>` : ""}
     `;
     card.addEventListener("click", (e) => {
-      if (e.target.dataset.edit) {
+      if (e.target.dataset.export) {
+        exportPlaylistCombined(p);
+      } else if (e.target.dataset.edit) {
         openPlaylistEditor(p);
       } else {
         playPlaylist(p);
       }
     });
     list.appendChild(card);
+  }
+}
+
+// ────────────────────────────────────────────────
+// Playlist export — combined PDF (client-side merge via pdf-lib)
+// ────────────────────────────────────────────────
+async function exportPlaylistCombined(p) {
+  const titles = p.songs || [];
+  if (titles.length === 0) {
+    toast("Playlist has no songs.");
+    return;
+  }
+  const matched = titles.map((t) => ({ title: t, file: libBySongTitle[t] }));
+  const missing = matched.filter((m) => !m.file).map((m) => m.title);
+  const found = matched.filter((m) => m.file);
+  if (found.length === 0) {
+    toast("No songs match the library — nothing to export.");
+    return;
+  }
+
+  toast(`Building PDF · ${found.length} song${found.length === 1 ? "" : "s"} …`);
+
+  try {
+    const { PDFDocument } = window.PDFLib;
+    const merged = await PDFDocument.create();
+
+    for (const { file } of found) {
+      const buf = await fetch(pdfDownloadUrl(file.id)).then((r) => r.arrayBuffer());
+      const src = await PDFDocument.load(buf, { ignoreEncryption: true });
+      const pages = await merged.copyPages(src, src.getPageIndices());
+      pages.forEach((pg) => merged.addPage(pg));
+    }
+
+    const bytes = await merged.save();
+    const blob = new Blob([bytes], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const dateStr = p.date || stem(p.name) || "playlist";
+    a.href = url;
+    a.download = `${dateStr}-combined.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+
+    const note = missing.length
+      ? ` (${missing.length} song${missing.length === 1 ? "" : "s"} not in library: ${missing.join(", ")})`
+      : "";
+    toast(`Exported ${found.length} song${found.length === 1 ? "" : "s"}${note}.`);
+  } catch (err) {
+    console.error(err);
+    toast(`Export failed: ${err.message || err}`);
   }
 }
 
