@@ -210,6 +210,8 @@ function initGis() {
         expires_at_ms: expiresAt,
       });
       toast("Signed in ✓");
+      reflectAuthState();
+      renderPlaylists();
     },
   });
 }
@@ -1270,14 +1272,23 @@ async function deletePlaylist() {
 // ────────────────────────────────────────────────
 // UI bindings
 // ────────────────────────────────────────────────
-document.querySelectorAll(".tab").forEach((tab) => {
-  tab.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-    document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
-    tab.classList.add("active");
-    $("view-" + tab.dataset.view).classList.add("active");
+function activateTab(view) {
+  document.querySelectorAll(".tab").forEach((t) => {
+    t.classList.toggle("active", t.dataset.view === view);
   });
+  document.querySelectorAll(".view").forEach((v) => {
+    v.classList.toggle("active", v.id === "view-" + view);
+  });
+  try { localStorage.setItem("ws_tab", view); } catch {}
+}
+document.querySelectorAll(".tab").forEach((tab) => {
+  tab.addEventListener("click", () => activateTab(tab.dataset.view));
 });
+// Restore last-selected tab on load
+try {
+  const last = localStorage.getItem("ws_tab");
+  if (last === "library" || last === "playlists") activateTab(last);
+} catch {}
 
 $("lib-search").addEventListener("input", (e) => renderLibrary(e.target.value));
 $("viewer-close").addEventListener("click", () => {
