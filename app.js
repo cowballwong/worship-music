@@ -639,12 +639,30 @@ function addPinDom(overlay, cssX, cssY, text, color, size, idx) {
   pin.style.color = color;
   pin.style.fontSize = size + "px";
   pin.dataset.idx = idx;
-  pin.innerHTML = `<span>${escape(text)}</span><span class="pin-x">✕</span>`;
+  pin.innerHTML = `<span class="pin-text">${escape(text)}</span><span class="pin-x">✕</span>`;
   pin.querySelector(".pin-x").addEventListener("click", (e) => {
     e.stopPropagation();
     const i = parseInt(pin.dataset.idx, 10);
     pendingAnnotations[i] = null; // mark removed
     pin.remove();
+    updateEditCount();
+  });
+  pin.querySelector(".pin-text").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const i = parseInt(pin.dataset.idx, 10);
+    const cur = pendingAnnotations[i];
+    if (!cur) return;
+    const next = prompt("Edit annotation 修改", cur.text);
+    if (next === null) return; // cancelled
+    const trimmed = next.trim();
+    if (!trimmed) {
+      // Empty → delete
+      pendingAnnotations[i] = null;
+      pin.remove();
+    } else {
+      cur.text = trimmed;
+      pin.querySelector(".pin-text").textContent = trimmed;
+    }
     updateEditCount();
   });
   overlay.appendChild(pin);

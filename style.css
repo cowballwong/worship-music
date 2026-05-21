@@ -283,6 +283,8 @@ body {
 }
 .edit-overlay svg .erasable { pointer-events: stroke; cursor: pointer; }
 .edit-overlay svg .erasable-fill { pointer-events: visiblePainted; cursor: pointer; }
+.annotation-pin .pin-text { cursor: pointer; }
+.annotation-pin .pin-text:hover { text-decoration: underline; }
 .annotation-pin {
   position: absolute; transform: translate(-2px, -50%);
   background: rgba(255,255,255,.95);
