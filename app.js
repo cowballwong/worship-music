@@ -1300,6 +1300,8 @@ try {
 // Capo helper
 // ────────────────────────────────────────────────
 const NOTE_NAMES = ["C", "C♯/D♭", "D", "D♯/E♭", "E", "F", "F♯/G♭", "G", "G♯/A♭", "A", "A♯/B♭", "B"];
+const NOTE_SHORT = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
+const OPEN_SHAPE_NOTES = new Set([0, 2, 4, 5, 7, 9]); // C D E F G A — common easy shapes
 (function initCapo() {
   const songSel = $("capo-song");
   if (!songSel) return;
@@ -1311,9 +1313,13 @@ const NOTE_NAMES = ["C", "C♯/D♭", "D", "D♯/E♭", "E", "F", "F♯/G♭", "
     const shapeVal = $("capo-shape").value;
     const result = $("capo-result");
     const hint = $("capo-hint");
+    const transWrap = $("capo-transpose");
+    const grid = $("capo-transpose-grid");
+
     if (songVal === "") {
       result.textContent = "—";
       hint.textContent = "Pick a song key.";
+      transWrap.classList.add("hidden");
       return;
     }
     const k = parseInt(songVal, 10);
@@ -1322,11 +1328,27 @@ const NOTE_NAMES = ["C", "C♯/D♭", "D", "D♯/E♭", "E", "F", "F♯/G♭", "
     const shapeName = NOTE_NAMES[s].split("/")[0];
     if (fret === 0) {
       result.textContent = "No capo";
-      hint.textContent = `Song is in ${NOTE_NAMES[k]}. Just play ${shapeName} shapes.`;
+      hint.textContent = `Song is in ${NOTE_NAMES[k]}. Just play ${shapeName} shapes — sheet as written.`;
     } else {
       result.textContent = `Capo at fret ${fret}`;
       hint.textContent = `Play ${shapeName} shapes · sounds in ${NOTE_NAMES[k]}.`;
     }
+
+    // Build transposition table — for each of 12 chord roots on the sheet,
+    // show what shape to play with the capo on. Mark open-friendly shapes with ★.
+    const rows = [];
+    for (let i = 0; i < 12; i++) {
+      const played = ((i - fret) % 12 + 12) % 12;
+      const easy = OPEN_SHAPE_NOTES.has(played);
+      const star = easy ? ' <span class="capo-easy">★</span>' : '';
+      rows.push(
+        `<div class="col-orig">${NOTE_SHORT[i]}</div>` +
+        `<div class="col-arrow">→</div>` +
+        `<div class="col-played">${NOTE_SHORT[played]}${star}</div>`
+      );
+    }
+    grid.innerHTML = rows.join("");
+    transWrap.classList.remove("hidden");
   }
   songSel.addEventListener("change", recompute);
   $("capo-shape").addEventListener("change", recompute);
