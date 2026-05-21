@@ -261,6 +261,10 @@ body {
 
 .capo-chord-cell { cursor: pointer; border-radius: 4px; transition: background .12s; }
 .capo-chord-cell:hover { background: var(--accent-soft); }
+.capo-chord-cell.capo-key-row {
+  background: var(--accent-soft);
+  font-weight: 700;
+}
 .capo-chord-cell.capo-chord-active {
   background: var(--accent); color: #fff;
 }
