@@ -828,7 +828,15 @@ function attachDrawHandlers(overlay, pageNum) {
       if (c) c.remove();
       return;
     }
-    if (d.points.length < 2 || sameSpot(d.points[0], d.points[d.points.length - 1])) {
+    // Discard truly empty strokes (no movement at all).
+    // For non-pen shape tools (line/box/circle/arrow) also discard when
+    // start ≈ end since a degenerate shape isn't useful. For pen, keep
+    // short strokes — dots, commas, ticks, accents are legitimate marks.
+    if (d.points.length < 2) {
+      d.svgEls.forEach((el) => el.remove());
+      return;
+    }
+    if (d.tool !== "pen" && sameSpot(d.points[0], d.points[d.points.length - 1])) {
       d.svgEls.forEach((el) => el.remove());
       return;
     }
