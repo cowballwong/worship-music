@@ -30,6 +30,7 @@ let editPageDims = [];          // [{ w, h }] in PDF points (page native)
 let pendingAnnotations = [];    // various types — see types below
 let activeTool = "pen";
 let currentDrag = null;         // active drag-tool stroke being drawn
+let pendingChordStamp = null;   // when set, next overlay tap stamps this chord text
 
 const DRAG_TOOLS = new Set(["pen", "line", "box", "circle", "arrow"]);
 
@@ -581,6 +582,7 @@ function exitEditUi() {
   $("viewer-save").classList.add("hidden");
   $("edit-toolbar").classList.add("hidden");
   $("capo-popover")?.classList.add("hidden");
+  clearChordStamp();
   $("viewer-prev").disabled = false;
   $("viewer-next").disabled = false;
   updateEditCount();
@@ -600,16 +602,22 @@ async function onOverlayTap(e, pageNum) {
   const pdfY = dim.h - pdfYTop;
 
   if (activeTool === "text") {
-    const text = prompt("Annotation text 文字 (e.g. Capo 4)", "");
-    if (!text || !text.trim()) return;
+    let text;
+    if (pendingChordStamp) {
+      text = pendingChordStamp; // chord-stamp mode — skip prompt, reuse last chord
+    } else {
+      text = prompt("Annotation text 文字 (e.g. Capo 4)", "");
+      if (!text || !text.trim()) return;
+      text = text.trim();
+    }
     const color = $("edit-color").value;
     const size = parseInt($("edit-fontsize").value, 10) || 14;
     const idx = pendingAnnotations.length;
     pendingAnnotations.push({
       type: "text", page: pageNum, x: pdfX, y: pdfY,
-      text: text.trim(), color, size, idx,
+      text: text, color, size, idx,
     });
-    addPinDom(overlay, tapX, tapY, text.trim(), color, size, idx);
+    addPinDom(overlay, tapX, tapY, text, color, size, idx);
   } else if (activeTool === "highlight") {
     const w_pdf = 80, h_pdf = 16;
     const idx = pendingAnnotations.length;
@@ -1305,6 +1313,30 @@ try {
 } catch {}
 
 // ────────────────────────────────────────────────
+// Chord stamp helpers (drag-and-drop free alternative for iPad)
+// ────────────────────────────────────────────────
+function showChordStampIndicator(chord) {
+  let ind = document.getElementById("chord-stamp-indicator");
+  if (!ind) {
+    ind = document.createElement("div");
+    ind.id = "chord-stamp-indicator";
+    ind.className = "chord-stamp-indicator";
+    document.body.appendChild(ind);
+    ind.addEventListener("click", clearChordStamp);
+  }
+  ind.innerHTML = `🎵 Stamp: <strong>${chord}</strong> &nbsp; <span class="chord-stamp-x">tap sheet to place · tap here to stop</span>`;
+  ind.classList.remove("hidden");
+}
+function clearChordStamp() {
+  pendingChordStamp = null;
+  const ind = document.getElementById("chord-stamp-indicator");
+  if (ind) ind.classList.add("hidden");
+  document.querySelectorAll(".capo-chord-cell").forEach((c) =>
+    c.classList.remove("capo-chord-active")
+  );
+}
+
+// ────────────────────────────────────────────────
 // Capo helper
 // ────────────────────────────────────────────────
 const NOTE_NAMES = ["C", "C♯/D♭", "D", "D♯/E♭", "E", "F", "F♯/G♭", "G", "G♯/A♭", "A", "A♯/B♭", "B"];
@@ -1344,19 +1376,43 @@ const OPEN_SHAPE_NOTES = new Set([0, 2, 4, 5, 7, 9]); // C D E F G A — common 
 
     // Build transposition table — for each of 12 chord roots on the sheet,
     // show what shape to play with the capo on. Mark open-friendly shapes with ★.
+    // Both columns are tappable to enter chord-stamp mode (tap then tap on sheet).
     const rows = [];
     for (let i = 0; i < 12; i++) {
       const played = ((i - fret) % 12 + 12) % 12;
       const easy = OPEN_SHAPE_NOTES.has(played);
       const star = easy ? ' <span class="capo-easy">★</span>' : '';
       rows.push(
-        `<div class="col-orig">${NOTE_SHORT[i]}</div>` +
+        `<div class="col-orig capo-chord-cell" data-chord="${NOTE_SHORT[i]}">${NOTE_SHORT[i]}</div>` +
         `<div class="col-arrow">→</div>` +
-        `<div class="col-played">${NOTE_SHORT[played]}${star}</div>`
+        `<div class="col-played capo-chord-cell" data-chord="${NOTE_SHORT[played]}">${NOTE_SHORT[played]}${star}</div>`
       );
     }
     grid.innerHTML = rows.join("");
     transWrap.classList.remove("hidden");
+
+    // Wire chord-stamp clicks
+    grid.querySelectorAll(".capo-chord-cell").forEach((cell) => {
+      cell.addEventListener("click", () => {
+        const ch = cell.dataset.chord;
+        if (pendingChordStamp === ch) {
+          // Same chord clicked again — clear stamp
+          clearChordStamp();
+          return;
+        }
+        pendingChordStamp = ch;
+        activeTool = "text";
+        // Reflect active tool in toolbar
+        document.querySelectorAll(".edit-tool").forEach((b) =>
+          b.classList.toggle("active", b.dataset.tool === "text")
+        );
+        // Visually mark which chord is the active stamp
+        grid.querySelectorAll(".capo-chord-cell").forEach((c) =>
+          c.classList.toggle("capo-chord-active", c.dataset.chord === ch)
+        );
+        showChordStampIndicator(ch);
+      });
+    });
   }
   songSel.addEventListener("change", recompute);
   $("capo-shape").addEventListener("change", recompute);
@@ -1384,6 +1440,7 @@ $("viewer-save").addEventListener("click", saveAndUpload);
 document.querySelectorAll(".edit-tool").forEach((b) =>
   b.addEventListener("click", () => {
     activeTool = b.dataset.tool;
+    if (activeTool !== "text") clearChordStamp();
     document.querySelectorAll(".edit-tool").forEach((x) => x.classList.toggle("active", x === b));
     document.querySelectorAll(".edit-overlay").forEach((o) => {
       o.classList.toggle("drag-mode", DRAG_TOOLS.has(activeTool) || activeTool === "eraser");
