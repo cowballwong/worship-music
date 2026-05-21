@@ -580,6 +580,7 @@ function exitEditUi() {
   $("viewer-cancel").classList.add("hidden");
   $("viewer-save").classList.add("hidden");
   $("edit-toolbar").classList.add("hidden");
+  $("capo-popover")?.classList.add("hidden");
   $("viewer-prev").disabled = false;
   $("viewer-next").disabled = false;
   updateEditCount();
@@ -1294,6 +1295,46 @@ try {
     if (initActive) localStorage.setItem("ws_tab", initActive);
   }
 } catch {}
+
+// ────────────────────────────────────────────────
+// Capo helper
+// ────────────────────────────────────────────────
+const NOTE_NAMES = ["C", "C♯/D♭", "D", "D♯/E♭", "E", "F", "F♯/G♭", "G", "G♯/A♭", "A", "A♯/B♭", "B"];
+(function initCapo() {
+  const songSel = $("capo-song");
+  if (!songSel) return;
+  songSel.innerHTML = `<option value="">— select —</option>` +
+    NOTE_NAMES.map((n, i) => `<option value="${i}">${n}</option>`).join("");
+
+  function recompute() {
+    const songVal = songSel.value;
+    const shapeVal = $("capo-shape").value;
+    const result = $("capo-result");
+    const hint = $("capo-hint");
+    if (songVal === "") {
+      result.textContent = "—";
+      hint.textContent = "Pick a song key.";
+      return;
+    }
+    const k = parseInt(songVal, 10);
+    const s = parseInt(shapeVal, 10);
+    const fret = ((k - s) % 12 + 12) % 12;
+    const shapeName = NOTE_NAMES[s].split("/")[0];
+    if (fret === 0) {
+      result.textContent = "No capo";
+      hint.textContent = `Song is in ${NOTE_NAMES[k]}. Just play ${shapeName} shapes.`;
+    } else {
+      result.textContent = `Capo at fret ${fret}`;
+      hint.textContent = `Play ${shapeName} shapes · sounds in ${NOTE_NAMES[k]}.`;
+    }
+  }
+  songSel.addEventListener("change", recompute);
+  $("capo-shape").addEventListener("change", recompute);
+
+  $("capo-btn").addEventListener("click", () => {
+    $("capo-popover").classList.toggle("hidden");
+  });
+})();
 
 $("lib-search").addEventListener("input", (e) => renderLibrary(e.target.value));
 $("viewer-close").addEventListener("click", () => {

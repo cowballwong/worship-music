@@ -99,7 +99,30 @@
         <input type="number" id="edit-fontsize" value="14" min="6" max="48" step="1" title="Custom size" style="width:50px;">
       </div>
       <button id="edit-undo" class="btn btn-ghost" title="Undo last">↶</button>
+      <button id="capo-btn" class="btn btn-ghost" title="Capo helper · 移調夾參考">🎸 Capo</button>
       <span id="edit-count" class="muted small"></span>
+    </div>
+
+    <!-- Capo helper popover -->
+    <div id="capo-popover" class="capo-popover hidden">
+      <div class="capo-row">
+        <label>Song in <span class="zh">原調</span></label>
+        <select id="capo-song"></select>
+      </div>
+      <div class="capo-row">
+        <label>Play shapes of <span class="zh">用…和弦</span></label>
+        <select id="capo-shape">
+          <option value="0">C</option>
+          <option value="2">D</option>
+          <option value="4">E</option>
+          <option value="7" selected>G</option>
+          <option value="9">A</option>
+        </select>
+      </div>
+      <div class="capo-output">
+        <div class="capo-fret-label">🎸 <span id="capo-result">—</span></div>
+        <div class="capo-hint" id="capo-hint">Pick a song key.</div>
+      </div>
     </div>
 
     <div id="viewer-canvas-wrap" class="viewer-canvas-wrap"></div>
