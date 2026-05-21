@@ -1375,17 +1375,21 @@ const OPEN_SHAPE_NOTES = new Set([0, 2, 4, 5, 7, 9]); // C D E F G A — common 
     }
 
     // Build transposition table — for each of 12 chord roots on the sheet,
-    // show what shape to play with the capo on. Mark open-friendly shapes with ★.
-    // Both columns are tappable to enter chord-stamp mode (tap then tap on sheet).
+    // show what shape to play with the capo on. Includes minor variants.
+    // Each cell (maj/min, orig/played) is independently tappable for chord-stamp.
     const rows = [];
     for (let i = 0; i < 12; i++) {
       const played = ((i - fret) % 12 + 12) % 12;
       const easy = OPEN_SHAPE_NOTES.has(played);
       const star = easy ? ' <span class="capo-easy">★</span>' : '';
+      const oRoot = NOTE_SHORT[i];
+      const pRoot = NOTE_SHORT[played];
       rows.push(
-        `<div class="col-orig capo-chord-cell" data-chord="${NOTE_SHORT[i]}">${NOTE_SHORT[i]}</div>` +
+        `<div class="col-orig capo-chord-cell" data-chord="${oRoot}">${oRoot}</div>` +
+        `<div class="col-orig-m capo-chord-cell" data-chord="${oRoot}m">${oRoot}m</div>` +
         `<div class="col-arrow">→</div>` +
-        `<div class="col-played capo-chord-cell" data-chord="${NOTE_SHORT[played]}">${NOTE_SHORT[played]}${star}</div>`
+        `<div class="col-played capo-chord-cell" data-chord="${pRoot}">${pRoot}${star}</div>` +
+        `<div class="col-played-m capo-chord-cell" data-chord="${pRoot}m">${pRoot}m</div>`
       );
     }
     grid.innerHTML = rows.join("");
