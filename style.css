@@ -186,6 +186,20 @@ body {
 .viewer-canvas-wrap iframe {
   flex: 1; width: 100%; border: 0; background: #fff;
 }
+.view-page-container {
+  display: inline-block; background: #fff;
+  box-shadow: 0 4px 20px rgba(0,0,0,.4);
+  margin: 0 auto;
+}
+.view-page-container canvas { display: block; }
+.zoom-controls {
+  display: flex; align-items: center; gap: 2px;
+  padding-right: 6px; margin-right: 4px;
+  border-right: 1px solid var(--rule);
+}
+.zoom-controls .btn { padding: 4px 8px; min-width: 32px; font-size: 14px; }
+#zoom-pct { min-width: 52px; font-variant-numeric: tabular-nums; }
+.zoom-controls.hidden { display: none; }
 .edit-page-container {
   position: relative; display: inline-block;
   background: #fff; box-shadow: 0 4px 20px rgba(0,0,0,.4);

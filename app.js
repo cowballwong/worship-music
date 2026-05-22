@@ -32,6 +32,15 @@ let activeTool = "pen";
 let currentDrag = null;         // active drag-tool stroke being drawn
 let pendingChordStamp = null;   // when set, next overlay tap stamps this chord text
 
+// Read-only viewer state (PDF.js)
+let viewPdfDoc = null;          // pdfjs doc for current viewed song
+let viewPdfFileId = null;       // Drive file id loaded into viewPdfDoc
+let viewZoom = 1.0;             // user multiplier on top of fit-width (1.0 = fit-width)
+const VIEW_ZOOM_MIN = 0.5;
+const VIEW_ZOOM_MAX = 4.0;
+const VIEW_ZOOM_STEP = 0.25;
+let viewRenderToken = 0;        // bumped on each render to cancel stale ones
+
 const DRAG_TOOLS = new Set(["pen", "line", "box", "circle", "arrow"]);
 
 // OAuth state
@@ -461,18 +470,85 @@ async function showCurrent() {
   $("viewer-name").textContent = cur.name;
   $("viewer-progress").textContent =
     viewerQueue.length > 1 ? `${viewerIndex + 1} / ${viewerQueue.length}` : "";
-  await showInIframe(cur.file);
+  await showInPdfJs(cur.file);
 }
 
-async function showInIframe(file) {
+async function showInPdfJs(file) {
   const wrap = $("viewer-canvas-wrap");
+  wrap.innerHTML = '<div class="muted small" style="color:#bbb;padding:30px;">Loading…</div>';
+
+  // Reset zoom per song (start at fit-width)
+  viewZoom = 1.0;
+  $("viewer-zoom").classList.remove("hidden");
+
+  try {
+    if (viewPdfFileId !== file.id || !viewPdfDoc) {
+      const buf = await (await fetch(pdfDownloadUrl(file.id))).arrayBuffer();
+      viewPdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
+      viewPdfFileId = file.id;
+    }
+    await renderViewPages();
+  } catch (e) {
+    console.error(e);
+    wrap.innerHTML = `<div class="empty"><div class="icon">⚠️</div>Load failed: ${escape(e.message)}</div>`;
+    $("viewer-zoom").classList.add("hidden");
+  }
+}
+
+async function renderViewPages() {
+  const wrap = $("viewer-canvas-wrap");
+  if (!viewPdfDoc) return;
+  const myToken = ++viewRenderToken;
+
+  await new Promise((r) => requestAnimationFrame(r));
+  const wrapW = wrap.clientWidth > 100 ? wrap.clientWidth : window.innerWidth;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  // fit-width base: leave a small margin so shadow/scrollbar don't clip
+  const fitTargetW = Math.max(240, wrapW - 24);
+
+  // Clear container only when starting a fresh render
   wrap.innerHTML = "";
-  const iframe = document.createElement("iframe");
-  iframe.src = `https://drive.google.com/file/d/${file.id}/preview`;
-  iframe.title = stem(file.name);
-  iframe.style.cssText = "width:100%;height:100%;border:0;background:#fff;";
-  iframe.allow = "autoplay";
-  wrap.appendChild(iframe);
+  updateZoomUI();
+
+  for (let i = 1; i <= viewPdfDoc.numPages; i++) {
+    if (myToken !== viewRenderToken) return;
+    const page = await viewPdfDoc.getPage(i);
+    const baseVp = page.getViewport({ scale: 1 });
+    const fitScale = fitTargetW / baseVp.width;
+    const cssScale = fitScale * viewZoom;
+    const vp = page.getViewport({ scale: cssScale * dpr });
+
+    const container = document.createElement("div");
+    container.className = "view-page-container";
+    container.style.width = (vp.width / dpr) + "px";
+    container.style.height = (vp.height / dpr) + "px";
+
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.floor(vp.width);
+    canvas.height = Math.floor(vp.height);
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
+    container.appendChild(canvas);
+    wrap.appendChild(container);
+
+    const ctx = canvas.getContext("2d");
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    if (myToken !== viewRenderToken) return;
+  }
+}
+
+function updateZoomUI() {
+  const pct = Math.round(viewZoom * 100);
+  $("zoom-pct").textContent = `${pct}%`;
+  $("zoom-out").disabled = viewZoom <= VIEW_ZOOM_MIN + 0.001;
+  $("zoom-in").disabled = viewZoom >= VIEW_ZOOM_MAX - 0.001;
+}
+
+function setViewZoom(z) {
+  const clamped = Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, z));
+  if (Math.abs(clamped - viewZoom) < 0.001) return;
+  viewZoom = clamped;
+  renderViewPages();
 }
 
 // ────────────────────────────────────────────────
@@ -496,6 +572,7 @@ async function enterEditMode() {
   $("viewer-cancel").classList.remove("hidden");
   $("viewer-save").classList.remove("hidden");
   $("edit-toolbar").classList.remove("hidden");
+  $("viewer-zoom").classList.add("hidden");
   $("viewer-prev").disabled = true;
   $("viewer-next").disabled = true;
 
@@ -569,9 +646,8 @@ async function enterEditMode() {
 function exitEditMode() {
   editMode = false;
   exitEditUi();
-  // re-show iframe view
   const cur = viewerQueue[viewerIndex];
-  if (cur) showInIframe(cur.file);
+  if (cur) showInPdfJs(cur.file);
 }
 
 function exitEditUi() {
@@ -1462,6 +1538,27 @@ $("viewer-next").addEventListener("click", async () => {
 $("viewer-edit").addEventListener("click", enterEditMode);
 $("viewer-cancel").addEventListener("click", () => exitEditMode());
 $("viewer-save").addEventListener("click", saveAndUpload);
+
+$("zoom-in").addEventListener("click", () => setViewZoom(viewZoom + VIEW_ZOOM_STEP));
+$("zoom-out").addEventListener("click", () => setViewZoom(viewZoom - VIEW_ZOOM_STEP));
+$("zoom-fit").addEventListener("click", () => setViewZoom(1.0));
+$("zoom-pct").addEventListener("click", () => setViewZoom(1.0));
+
+let viewResizeT = null;
+window.addEventListener("resize", () => {
+  if ($("viewer").classList.contains("hidden") || editMode || !viewPdfDoc) return;
+  clearTimeout(viewResizeT);
+  viewResizeT = setTimeout(() => renderViewPages(), 200);
+});
+
+document.addEventListener("keydown", (e) => {
+  if ($("viewer").classList.contains("hidden")) return;
+  if (editMode) return;
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+  if (e.key === "+" || e.key === "=") { setViewZoom(viewZoom + VIEW_ZOOM_STEP); e.preventDefault(); }
+  else if (e.key === "-" || e.key === "_") { setViewZoom(viewZoom - VIEW_ZOOM_STEP); e.preventDefault(); }
+  else if (e.key === "0") { setViewZoom(1.0); e.preventDefault(); }
+});
 
 document.querySelectorAll(".edit-tool").forEach((b) =>
   b.addEventListener("click", () => {
