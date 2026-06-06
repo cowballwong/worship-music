@@ -1100,8 +1100,16 @@ function finalizeDrag(d) {
   const el = d.svgEls[0];
   el.dataset.idx = idx;
   el.classList.add(d.tool === "box" || d.tool === "circle" ? "erasable-fill" : "erasable");
+  // Tap an existing mark to delete it — BUT ignore the synthetic click the
+  // browser fires at the end of the very gesture that just drew this stroke
+  // (Apple Pencil / touch). Without this guard the mark deletes itself the
+  // instant you finish writing it ("寫字自動唔見"). Use the eraser tool to
+  // remove ink mid-session; tap-to-delete stays available after the gesture.
+  const createdAt = (window.performance && performance.now) ? performance.now() : Date.now();
   el.addEventListener("click", (ev) => {
     ev.stopPropagation();
+    const now = (window.performance && performance.now) ? performance.now() : Date.now();
+    if (now - createdAt < 700) return; // trailing click from the draw gesture
     const i = parseInt(el.dataset.idx, 10);
     if (Number.isNaN(i)) return;
     pendingAnnotations[i] = null;
