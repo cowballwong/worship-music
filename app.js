@@ -481,12 +481,27 @@ async function openSong(file) {
 }
 
 async function playPlaylist(p) {
+  // Clear, honest failure messages — a blank set is usually Drive being busy
+  // (abuse cooldown on this IP), NOT a real title mismatch. Don't mislead.
+  if (p.error) {
+    toast("Playlist couldn't load from Drive — it may be busy. Try mobile data, or wait a minute and reload.", 7000);
+    return;
+  }
+  if (!Object.keys(libBySongTitle).length) {
+    toast("Library hasn't loaded yet (Drive may be busy). Try mobile data, or wait and reload.", 7000);
+    return;
+  }
   const songs = (p.songs || [])
     .map((title) => libBySongTitle[title])
     .filter(Boolean)
     .map((file) => ({ file, name: stem(file.name) }));
   if (songs.length === 0) {
-    toast(`Playlist has no matching songs in library.`);
+    toast(
+      (p.songs && p.songs.length)
+        ? "Playlist songs don't match any library file names — check the song titles."
+        : "This playlist has no songs yet.",
+      7000
+    );
     return;
   }
   viewerQueue = songs;
