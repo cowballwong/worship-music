@@ -311,13 +311,46 @@ async function loadPlaylists() {
   const files = (await driveListFolder(plSubfolderId)).filter((f) =>
     /\.json$/i.test(f.name)
   );
+  // Cache each playlist's JSON in localStorage keyed by file id + modifiedTime.
+  // Re-downloading every JSON on every page load is what bursts Google's
+  // alt=media endpoint and trips the IP-wide abuse cooldown that blocks the
+  // whole site for 1-2h. With caching, an unchanged reload does ZERO downloads,
+  // and during a cooldown we fall back to the last cached copy so playlists
+  // still show. A playlist edit changes modifiedTime → fresh download.
+  const cachePrefix = (id) => `wm-pl:${id}:`;
+  const anyCached = (id) => {
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(cachePrefix(id))) return localStorage.getItem(k);
+      }
+    } catch {}
+    return null;
+  };
   playlists = await Promise.all(
     files.map(async (f) => {
+      const key = `${cachePrefix(f.id)}${f.modifiedTime || ""}`;
+      try {
+        const hit = localStorage.getItem(key);
+        if (hit) return { id: f.id, name: f.name, ...JSON.parse(hit) };
+      } catch {}
       try {
         const r = await fetch(pdfDownloadUrl(f.id));
+        if (!r.ok) throw new Error("HTTP " + r.status);
         const j = await r.json();
+        try {
+          for (let i = localStorage.length - 1; i >= 0; i--) {
+            const k = localStorage.key(i);
+            if (k && k.startsWith(cachePrefix(f.id))) localStorage.removeItem(k);
+          }
+          localStorage.setItem(key, JSON.stringify(j));
+        } catch {}
         return { id: f.id, name: f.name, ...j };
       } catch {
+        const stale = anyCached(f.id);
+        if (stale) {
+          try { return { id: f.id, name: f.name, ...JSON.parse(stale), stale: true }; } catch {}
+        }
         return { id: f.id, name: f.name, songs: [], error: true };
       }
     })
