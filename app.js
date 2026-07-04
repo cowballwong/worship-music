@@ -612,6 +612,22 @@ function setViewZoom(z) {
   renderViewPages();
 }
 
+// Fit-to-height: set viewZoom so the (first) page's displayed height fills the
+// viewer's visible height. Display height = fitTargetW * viewZoom * (h/w), so
+// solve viewZoom = availH * w / (fitTargetW * h). All current sheets are single
+// page, so page 1's aspect is exact.
+async function fitToHeight() {
+  if (!viewPdfDoc) return;
+  const wrap = $("viewer-canvas-wrap");
+  const availH = (wrap.clientHeight > 80 ? wrap.clientHeight : window.innerHeight) - 24;
+  const wrapW = wrap.clientWidth > 100 ? wrap.clientWidth : window.innerWidth;
+  const fitTargetW = Math.max(240, wrapW - 24);
+  const page = await viewPdfDoc.getPage(1);
+  const baseVp = page.getViewport({ scale: 1 });
+  const z = (availH * baseVp.width) / (fitTargetW * baseVp.height);
+  setViewZoom(z);
+}
+
 // ────────────────────────────────────────────────
 // EDIT MODE — render PDF.js canvas + tap-to-add text annotations
 // ────────────────────────────────────────────────
@@ -1741,6 +1757,7 @@ $("viewer-save").addEventListener("click", saveAndUpload);
 $("zoom-in").addEventListener("click", () => setViewZoom(viewZoom + VIEW_ZOOM_STEP));
 $("zoom-out").addEventListener("click", () => setViewZoom(viewZoom - VIEW_ZOOM_STEP));
 $("zoom-fit").addEventListener("click", () => setViewZoom(1.0));
+$("zoom-fith").addEventListener("click", fitToHeight);
 $("zoom-pct").addEventListener("click", () => setViewZoom(1.0));
 
 let viewResizeT = null;
