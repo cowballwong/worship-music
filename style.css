@@ -232,6 +232,14 @@ body {
   max-height: calc(100vh - 100px); overflow-y: auto;
 }
 .capo-popover.hidden { display: none; }
+.capo-drag-handle {
+  cursor: move; touch-action: none; user-select: none;
+  margin: -14px -16px 10px; padding: 8px 16px;
+  background: var(--rule); border-radius: 10px 10px 0 0;
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.capo-drag-handle .capo-drag-hint { font-size: 11px; opacity: .55; font-weight: 400; }
 .capo-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .capo-row label { font-size: 12px; color: var(--muted); }
 .capo-row label .zh { display: block; font-size: 10px; opacity: 0.7; }
@@ -306,17 +314,23 @@ body {
 .annotation-pin .pin-text:hover { text-decoration: underline; }
 .annotation-pin {
   position: absolute; transform: translate(-2px, -50%);
-  background: rgba(255,255,255,.95);
+  background: rgba(255,255,255,.7);
   border: 2px solid currentColor;
   border-radius: 4px; padding: 2px 6px;
   font-family: "Inter", system-ui, sans-serif;
   font-weight: 700;
   white-space: nowrap; pointer-events: auto;
-  cursor: grab; user-select: none;
+  user-select: none;
   box-shadow: 0 1px 3px rgba(0,0,0,.3);
+  display: inline-flex; align-items: center; gap: 2px;
 }
+.annotation-pin .pin-grip {
+  cursor: move; touch-action: none; opacity: .55;
+  font-size: .9em; margin-right: 2px; color: #666;
+}
+.annotation-pin .pin-grip:hover { opacity: .9; }
 .annotation-pin .pin-x {
-  margin-left: 6px; color: #c33; cursor: pointer; font-weight: bold;
+  margin-left: 4px; color: #c33; cursor: pointer; font-weight: bold;
 }
 
 .hidden { display: none !important; }

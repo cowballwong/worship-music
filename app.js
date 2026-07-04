@@ -763,7 +763,7 @@ function addPinDom(overlay, cssX, cssY, text, color, size, idx) {
   pin.style.color = color;
   pin.style.fontSize = size + "px";
   pin.dataset.idx = idx;
-  pin.innerHTML = `<span class="pin-text">${escape(text)}</span><span class="pin-x">✕</span>`;
+  pin.innerHTML = `<span class="pin-grip" title="Drag to move 拖動">⠿</span><span class="pin-text">${escape(text)}</span><span class="pin-x">✕</span>`;
   pin.querySelector(".pin-x").addEventListener("click", (e) => {
     e.stopPropagation();
     const i = parseInt(pin.dataset.idx, 10);
@@ -788,6 +788,37 @@ function addPinDom(overlay, cssX, cssY, text, color, size, idx) {
       pin.querySelector(".pin-text").textContent = trimmed;
     }
     updateEditCount();
+  });
+  // Drag-to-reposition via the grip (updates the saved PDF coords on drop).
+  const grip = pin.querySelector(".pin-grip");
+  let dragging = false, sx = 0, sy = 0, startLeft = 0, startTop = 0;
+  grip.addEventListener("pointerdown", (e) => {
+    e.stopPropagation(); e.preventDefault();
+    dragging = true;
+    sx = e.clientX; sy = e.clientY;
+    startLeft = parseFloat(pin.style.left) || 0;
+    startTop = parseFloat(pin.style.top) || 0;
+    try { grip.setPointerCapture(e.pointerId); } catch {}
+  });
+  grip.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    pin.style.left = (startLeft + e.clientX - sx) + "px";
+    pin.style.top = (startTop + e.clientY - sy) + "px";
+  });
+  grip.addEventListener("pointerup", (e) => {
+    if (!dragging) return;
+    dragging = false;
+    try { grip.releasePointerCapture(e.pointerId); } catch {}
+    const i = parseInt(pin.dataset.idx, 10);
+    const ann = pendingAnnotations[i];
+    if (!ann) return;
+    const rect = overlay.getBoundingClientRect();
+    const dim = editPageDims[(parseInt(overlay.dataset.page, 10) || 1) - 1];
+    if (!dim) return;
+    const newCssX = parseFloat(pin.style.left) || 0;
+    const newCssY = parseFloat(pin.style.top) || 0;
+    ann.x = (newCssX / rect.width) * dim.w;
+    ann.y = dim.h - (newCssY / rect.height) * dim.h;
   });
   overlay.appendChild(pin);
 }
@@ -1269,7 +1300,7 @@ async function saveAndUpload() {
     pendingAnnotations = [];
     exitEditUi();
     await new Promise((r) => setTimeout(r, 600)); // give Drive a moment
-    await showInIframe(cur.file);
+    await showInPdfJs(cur.file);
   } catch (e) {
     console.error(e);
     toast(`Save failed: ${e.message}`);
@@ -1538,12 +1569,14 @@ const OPEN_SHAPE_NOTES = new Set([0, 2, 4, 5, 7, 9]); // C D E F G A — common 
       const pRoot = NOTE_SHORT[played];
       const isKeyRow = i === k;
       const keyCls = isKeyRow ? " capo-key-row" : "";
+      // data-stamp is ALWAYS the finger (capo'd/played) chord — so tapping a
+      // "Sheet says" cell stamps the transposed shape you actually play.
       rows.push(
-        `<div class="col-orig capo-chord-cell${keyCls}" data-chord="${oRoot}">${oRoot}</div>` +
-        `<div class="col-orig-m capo-chord-cell" data-chord="${oRoot}m">${oRoot}m</div>` +
+        `<div class="col-orig capo-chord-cell${keyCls}" data-chord="${oRoot}" data-stamp="${pRoot}">${oRoot}</div>` +
+        `<div class="col-orig-m capo-chord-cell" data-chord="${oRoot}m" data-stamp="${pRoot}m">${oRoot}m</div>` +
         `<div class="col-arrow">→</div>` +
-        `<div class="col-played capo-chord-cell${keyCls}" data-chord="${pRoot}">${pRoot}${star}</div>` +
-        `<div class="col-played-m capo-chord-cell" data-chord="${pRoot}m">${pRoot}m</div>`
+        `<div class="col-played capo-chord-cell${keyCls}" data-chord="${pRoot}" data-stamp="${pRoot}">${pRoot}${star}</div>` +
+        `<div class="col-played-m capo-chord-cell" data-chord="${pRoot}m" data-stamp="${pRoot}m">${pRoot}m</div>`
       );
     }
     grid.innerHTML = rows.join("");
@@ -1552,10 +1585,13 @@ const OPEN_SHAPE_NOTES = new Set([0, 2, 4, 5, 7, 9]); // C D E F G A — common 
     // Wire chord-stamp clicks
     grid.querySelectorAll(".capo-chord-cell").forEach((cell) => {
       cell.addEventListener("click", () => {
-        const ch = cell.dataset.chord;
-        if (pendingChordStamp === ch) {
-          // Same chord clicked again — clear stamp
+        const ch = cell.dataset.stamp || cell.dataset.chord;
+        if (pendingChordStamp === ch && cell.classList.contains("capo-chord-active")) {
+          // Same cell clicked again — clear stamp
           clearChordStamp();
+          grid.querySelectorAll(".capo-chord-cell").forEach((c) =>
+            c.classList.remove("capo-chord-active")
+          );
           return;
         }
         pendingChordStamp = ch;
@@ -1564,10 +1600,11 @@ const OPEN_SHAPE_NOTES = new Set([0, 2, 4, 5, 7, 9]); // C D E F G A — common 
         document.querySelectorAll(".edit-tool").forEach((b) =>
           b.classList.toggle("active", b.dataset.tool === "text")
         );
-        // Visually mark which chord is the active stamp
+        // Mark the tapped cell as the active stamp
         grid.querySelectorAll(".capo-chord-cell").forEach((c) =>
-          c.classList.toggle("capo-chord-active", c.dataset.chord === ch)
+          c.classList.remove("capo-chord-active")
         );
+        cell.classList.add("capo-chord-active");
         showChordStampIndicator(ch);
       });
     });
@@ -1578,6 +1615,38 @@ const OPEN_SHAPE_NOTES = new Set([0, 2, 4, 5, 7, 9]); // C D E F G A — common 
   $("capo-btn").addEventListener("click", () => {
     $("capo-popover").classList.toggle("hidden");
   });
+})();
+
+// Make the Capo popover draggable by its handle so it never blocks the sheet.
+(function makeCapoDraggable() {
+  const pop = $("capo-popover");
+  const handle = $("capo-drag-handle");
+  if (!pop || !handle) return;
+  let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
+  handle.addEventListener("pointerdown", (e) => {
+    dragging = true;
+    const r = pop.getBoundingClientRect();
+    // Switch from right-anchored to left/top so we can move freely.
+    pop.style.left = r.left + "px";
+    pop.style.top = r.top + "px";
+    pop.style.right = "auto";
+    sx = e.clientX; sy = e.clientY; ox = r.left; oy = r.top;
+    try { handle.setPointerCapture(e.pointerId); } catch {}
+    e.preventDefault();
+  });
+  handle.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    let nx = ox + e.clientX - sx;
+    let ny = oy + e.clientY - sy;
+    // keep it on-screen
+    nx = Math.max(4, Math.min(nx, window.innerWidth - 60));
+    ny = Math.max(4, Math.min(ny, window.innerHeight - 40));
+    pop.style.left = nx + "px";
+    pop.style.top = ny + "px";
+  });
+  const end = (e) => { dragging = false; try { handle.releasePointerCapture(e.pointerId); } catch {} };
+  handle.addEventListener("pointerup", end);
+  handle.addEventListener("pointercancel", end);
 })();
 
 $("lib-search").addEventListener("input", (e) => renderLibrary(e.target.value));
