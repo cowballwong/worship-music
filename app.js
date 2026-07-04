@@ -1222,11 +1222,24 @@ async function saveAndUpload() {
       const { width: pw, height: ph } = page.getSize();
       const c = hexToRgbObj(a.color);
       if (a.type === "text") {
-        // Draw the text directly so annotation shows in any viewer (Drive,
-        // mobile, print). Re-edit later by adding new pins on top.
+        // Draw the chord as a framed "sticker": semi-white bg + coloured border
+        // + text, matching the on-screen pin (which is vertically centred at a.y
+        // and left-anchored at a.x via translate(-2px,-50%)). This keeps the
+        // frame/background AND the position after save+reload.
+        const tw = helv.widthOfTextAtSize(a.text, a.size);
+        const padX = a.size * 0.35, padY = a.size * 0.28;
+        const boxH = a.size + padY * 2;
+        const boxW = tw + padX * 2;
+        const boxX = a.x - 2;
+        const boxY = a.y - boxH / 2;
+        page.drawRectangle({ x: boxX, y: boxY, width: boxW, height: boxH,
+          color: rgb(1, 1, 1), opacity: 0.7 });
+        page.drawRectangle({ x: boxX, y: boxY, width: boxW, height: boxH,
+          borderColor: rgb(c.r, c.g, c.b), borderWidth: 1.2,
+          color: undefined, opacity: 0 });
         page.drawText(a.text, {
-          x: a.x,
-          y: a.y - a.size * 0.85, // baseline adjustment
+          x: boxX + padX,
+          y: a.y - a.size * 0.36, // baseline so the glyphs sit centred in the box
           size: a.size,
           font: helv,
           color: rgb(c.r, c.g, c.b),
@@ -1296,11 +1309,22 @@ async function saveAndUpload() {
     await uploadPdfBytes(cur.file.id, out);
     toast(`Saved ✓ ${cur.name}`);
 
-    // Switch back to view mode (Drive iframe will fetch the updated file)
+    // Re-render immediately from the bytes we just saved. showInPdfJs would
+    // reuse the stale cached doc for the same file id (and re-fetching Drive lags
+    // a few seconds) — both made the markup "disappear until reload".
     pendingAnnotations = [];
     exitEditUi();
-    await new Promise((r) => setTimeout(r, 600)); // give Drive a moment
-    await showInPdfJs(cur.file);
+    editPdfBytes = out;
+    try {
+      viewPdfDoc = await pdfjsLib.getDocument({ data: out.slice(0) }).promise;
+      viewPdfFileId = cur.file.id;
+      await renderViewPages();
+    } catch (e2) {
+      console.error(e2);
+      await new Promise((r) => setTimeout(r, 800));
+      viewPdfDoc = null; viewPdfFileId = null; // force a fresh fetch
+      await showInPdfJs(cur.file);
+    }
   } catch (e) {
     console.error(e);
     toast(`Save failed: ${e.message}`);
