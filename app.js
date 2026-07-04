@@ -547,6 +547,7 @@ async function renderViewPages() {
   const wrap = $("viewer-canvas-wrap");
   if (!viewPdfDoc) return;
   const myToken = ++viewRenderToken;
+  const storedText = await readStoredTextAnnotations(viewPdfDoc);
 
   await new Promise((r) => requestAnimationFrame(r));
   const wrapW = wrap.clientWidth > 100 ? wrap.clientWidth : window.innerWidth;
@@ -582,6 +583,9 @@ async function renderViewPages() {
     const ctx = canvas.getContext("2d");
     await page.render({ canvasContext: ctx, viewport: vp }).promise;
     if (myToken !== viewRenderToken) return;
+    // Overlay the re-editable chord/text markup (read-only in view mode).
+    storedText.filter((a) => a.page === i).forEach((a) =>
+      renderTextAnnReadOnly(container, baseVp.width, baseVp.height, a));
   }
 }
 
@@ -635,6 +639,7 @@ async function enterEditMode() {
     const pdf = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
     editPdfDoc = pdf;
     editPageDims = [];
+    const storedText = await readStoredTextAnnotations(pdf);
 
     wrap.innerHTML = "";
     await new Promise((r) => requestAnimationFrame(r));
@@ -676,6 +681,17 @@ async function enterEditMode() {
       });
       attachDrawHandlers(overlay, i);
       container.appendChild(overlay);
+
+      // Reload previously-saved chord/text markup as EDITABLE pins.
+      storedText.filter((a) => a.page === i).forEach((a) => {
+        const idx = pendingAnnotations.length;
+        pendingAnnotations.push({ type: "text", page: i, x: a.x, y: a.y,
+          text: a.text, color: a.color, size: a.size, idx });
+        const cw = vp.width / dpr, chh = vp.height / dpr;
+        const cssX = (a.x / baseVp.width) * cw;
+        const cssY = ((baseVp.height - a.y) / baseVp.height) * chh;
+        addPinDom(overlay, cssX, cssY, a.text, a.color, a.size, idx);
+      });
 
       wrap.appendChild(container);
 
@@ -821,6 +837,44 @@ function addPinDom(overlay, cssX, cssY, text, color, size, idx) {
     ann.y = dim.h - (newCssY / rect.height) * dim.h;
   });
   overlay.appendChild(pin);
+}
+
+// ── Re-editable chord/text markup ───────────────────────────────────────────
+// Text/chord annotations are stored as JSON inside the PDF's Keywords metadata
+// (NOT baked into pixels), so they stay editable/movable/removable forever and
+// still show in this app's view + edit. Freehand pen/shape marks keep baking.
+const WM_META_PREFIX = "WMANNO1:";
+
+async function readStoredTextAnnotations(pdfDoc) {
+  try {
+    const md = await pdfDoc.getMetadata();
+    let kw = md?.info?.Keywords || "";
+    if (Array.isArray(kw)) kw = kw.join("");
+    if (typeof kw !== "string" || !kw.startsWith(WM_META_PREFIX)) return [];
+    const arr = JSON.parse(kw.slice(WM_META_PREFIX.length));
+    return Array.isArray(arr) ? arr.filter((a) => a && a.type === "text") : [];
+  } catch (e) { console.warn("readStoredTextAnnotations", e); return []; }
+}
+
+// Draw a read-only chord/text sticker onto a rendered page container (view mode).
+function renderTextAnnReadOnly(container, pageW, pageH, a) {
+  let layer = container.querySelector(".wm-anno-layer");
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.className = "wm-anno-layer";
+    container.appendChild(layer);
+  }
+  const cw = container.clientWidth, ch = container.clientHeight;
+  const cssX = (a.x / pageW) * cw;
+  const cssY = ((pageH - a.y) / pageH) * ch;
+  const pin = document.createElement("div");
+  pin.className = "annotation-pin wm-view-pin";
+  pin.style.left = cssX + "px";
+  pin.style.top = cssY + "px";
+  pin.style.color = a.color || "#c0392b";
+  pin.style.fontSize = (a.size || 14) + "px";
+  pin.textContent = a.text;
+  layer.appendChild(pin);
 }
 
 function addHighlightDom(overlay, cssX, cssY, color, idx) {
@@ -1222,28 +1276,7 @@ async function saveAndUpload() {
       const { width: pw, height: ph } = page.getSize();
       const c = hexToRgbObj(a.color);
       if (a.type === "text") {
-        // Draw the chord as a framed "sticker": semi-white bg + coloured border
-        // + text, matching the on-screen pin (which is vertically centred at a.y
-        // and left-anchored at a.x via translate(-2px,-50%)). This keeps the
-        // frame/background AND the position after save+reload.
-        const tw = helv.widthOfTextAtSize(a.text, a.size);
-        const padX = a.size * 0.35, padY = a.size * 0.28;
-        const boxH = a.size + padY * 2;
-        const boxW = tw + padX * 2;
-        const boxX = a.x - 2;
-        const boxY = a.y - boxH / 2;
-        page.drawRectangle({ x: boxX, y: boxY, width: boxW, height: boxH,
-          color: rgb(1, 1, 1), opacity: 0.7 });
-        page.drawRectangle({ x: boxX, y: boxY, width: boxW, height: boxH,
-          borderColor: rgb(c.r, c.g, c.b), borderWidth: 1.2,
-          color: undefined, opacity: 0 });
-        page.drawText(a.text, {
-          x: boxX + padX,
-          y: a.y - a.size * 0.36, // baseline so the glyphs sit centred in the box
-          size: a.size,
-          font: helv,
-          color: rgb(c.r, c.g, c.b),
-        });
+        continue; // chord/text markup is stored as re-editable metadata, not baked
       } else if (a.type === "highlight") {
         page.drawRectangle({
           x: a.x,
@@ -1304,6 +1337,14 @@ async function saveAndUpload() {
         });
       }
     }
+
+    // Store text/chord annotations as re-editable metadata (survives as data,
+    // not pixels — editable/movable/removable forever; shown as overlay in-app).
+    const textAnns = live.filter((a) => a.type === "text").map((a) => ({
+      type: "text", page: a.page, x: a.x, y: a.y,
+      text: a.text, color: a.color, size: a.size,
+    }));
+    pdf.setKeywords([WM_META_PREFIX + JSON.stringify(textAnns)]);
 
     const out = await pdf.save();
     await uploadPdfBytes(cur.file.id, out);

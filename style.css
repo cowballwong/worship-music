@@ -332,6 +332,10 @@ body {
 .annotation-pin .pin-x {
   margin-left: 4px; color: #c33; cursor: pointer; font-weight: bold;
 }
+/* Re-editable chord/text overlay (read-only in view mode) */
+.view-page-container { position: relative; }
+.wm-anno-layer { position: absolute; inset: 0; pointer-events: none; }
+.annotation-pin.wm-view-pin { pointer-events: none; cursor: default; }
 
 .hidden { display: none !important; }
 
