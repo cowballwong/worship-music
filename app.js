@@ -187,6 +187,7 @@ function loadStoredToken() {
 function storeToken(t) {
   oauthToken = t;
   localStorage.setItem(TOKEN_KEY, JSON.stringify(t));
+  localStorage.setItem("wm-oauth-granted", "1"); // remember consent given
   reflectAuthState();
 }
 function clearToken() {
@@ -224,6 +225,11 @@ function initGis() {
       renderPlaylists();
     },
   });
+  // Returning user (already consented) but the 1-hour token lapsed → silently
+  // refresh on load so the app auto-signs-in with NO consent/"unverified" screen.
+  if (!oauthToken && localStorage.getItem("wm-oauth-granted")) {
+    try { tokenClient.requestAccessToken({ prompt: "" }); } catch {}
+  }
 }
 
 function signIn() {
@@ -231,7 +237,10 @@ function signIn() {
     toast("Sign-in not configured (check OAUTH_CLIENT_ID).");
     return;
   }
-  tokenClient.requestAccessToken({ prompt: oauthToken ? "" : "consent" });
+  // Only show the consent screen (and Google's "unverified app" warning) on the
+  // very first grant. Returning users refresh silently.
+  const grantedBefore = oauthToken || localStorage.getItem("wm-oauth-granted");
+  tokenClient.requestAccessToken({ prompt: grantedBefore ? "" : "consent" });
 }
 
 function signOut() {
