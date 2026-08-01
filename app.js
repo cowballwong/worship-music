@@ -108,6 +108,38 @@ function pdfDownloadUrl(fileId) {
   return `${API}/files/${fileId}?alt=media&key=${cfg.API_KEY}`;
 }
 
+/**
+ * Download a file, using the SIGNED-IN account when there is one.
+ *
+ * Everything used to go through the API key, even while signed in. An API-key
+ * download is anonymous, and anonymous downloads share Drive's per-file abuse
+ * quota — so once that quota trips, every song on the site fails to load and
+ * signing in does not help, because signing in changed nothing about the
+ * request. That is exactly what "Load fail" was.
+ *
+ * With a Bearer token the download is attributed to his own account and the
+ * anonymous quota does not apply. The key stays as the fallback for a signed-out
+ * visitor, and a 403 falls back the other way too, so neither path is a
+ * single point of failure.
+ */
+async function fetchPdfBytes(fileId) {
+  const authed = !!oauthToken?.access_token;
+  if (authed) {
+    const r = await fetch(`${API}/files/${fileId}?alt=media`, { headers: authedHeaders() });
+    if (r.ok) return await r.arrayBuffer();
+    console.warn("authed download failed", r.status, "— falling back to API key");
+  }
+  const r2 = await fetch(pdfDownloadUrl(fileId));
+  if (!r2.ok) {
+    throw new Error(
+      r2.status === 403
+        ? "Drive 擋咗匿名下載(配額)。撳右上角 Sign in 就會用你自己個 Google 帳戶攞,唔受呢個限制。"
+        : `HTTP ${r2.status}`
+    );
+  }
+  return await r2.arrayBuffer();
+}
+
 async function uploadPdfBytes(fileId, bytes) {
   if (!oauthToken?.access_token) throw new Error("Not signed in");
   const r = await fetch(`${UPLOAD}/files/${fileId}?uploadType=media`, {
@@ -344,9 +376,7 @@ async function loadPlaylists() {
         if (hit) return { id: f.id, name: f.name, ...JSON.parse(hit) };
       } catch {}
       try {
-        const r = await fetch(pdfDownloadUrl(f.id));
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        const j = await r.json();
+        const j = JSON.parse(new TextDecoder().decode(await fetchPdfBytes(f.id)));
         try {
           for (let i = localStorage.length - 1; i >= 0; i--) {
             const k = localStorage.key(i);
@@ -449,7 +479,7 @@ async function exportPlaylistCombined(p) {
     const merged = await PDFDocument.create();
 
     for (const { file } of found) {
-      const buf = await fetch(pdfDownloadUrl(file.id)).then((r) => r.arrayBuffer());
+      const buf = await fetchPdfBytes(file.id);
       const src = await PDFDocument.load(buf, { ignoreEncryption: true });
       const pages = await merged.copyPages(src, src.getPageIndices());
       pages.forEach((pg) => merged.addPage(pg));
@@ -548,7 +578,7 @@ async function showInPdfJs(file) {
 
   try {
     if (viewPdfFileId !== file.id || !viewPdfDoc) {
-      const buf = await (await fetch(pdfDownloadUrl(file.id))).arrayBuffer();
+      const buf = await fetchPdfBytes(file.id);
       viewPdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
       viewPdfFileId = file.id;
     }
@@ -685,7 +715,7 @@ async function enterEditMode() {
   wrap.innerHTML = '<div class="muted small" style="color:#bbb;padding:30px;">Loading for edit…</div>';
 
   try {
-    const buf = await (await fetch(pdfDownloadUrl(cur.file.id))).arrayBuffer();
+    const buf = await fetchPdfBytes(cur.file.id);
     editPdfBytes = new Uint8Array(buf);
     const pdf = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
     editPdfDoc = pdf;
