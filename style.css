@@ -192,6 +192,17 @@ body {
   margin: 0 auto;
 }
 .view-page-container canvas { display: block; }
+
+/* Spread: every page of the song in one horizontal row, scaled so the whole
+   song is on screen at once. Anzon plays from a stand and asked to 「打橫一次過
+   睇晒」 — the point is no scrolling and no page turns mid-song, so the row must
+   not scroll either; the pages shrink to fit instead. */
+.viewer-canvas-wrap.spread {
+  flex-direction: row; align-items: center; justify-content: center;
+  overflow: hidden; gap: 8px; padding: 6px;
+}
+.viewer-canvas-wrap.spread .view-page-container { margin: 0; flex: 0 0 auto; }
+#view-spread.on { background: var(--accent, #C4763C); color: #fff; }
 .zoom-controls {
   display: flex; align-items: center; gap: 2px;
   padding-right: 6px; margin-right: 4px;

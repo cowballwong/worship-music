@@ -530,6 +530,14 @@ async function showCurrent() {
   await showInPdfJs(cur.file);
 }
 
+let viewSpread = localStorage.getItem("wm-spread") === "1";
+
+function toggleSpread() {
+  viewSpread = !viewSpread;
+  localStorage.setItem("wm-spread", viewSpread ? "1" : "0");
+  renderViewPages();
+}
+
 async function showInPdfJs(file) {
   const wrap = $("viewer-canvas-wrap");
   wrap.innerHTML = '<div class="muted small" style="color:#bbb;padding:30px;">Loading…</div>';
@@ -560,9 +568,25 @@ async function renderViewPages() {
 
   await new Promise((r) => requestAnimationFrame(r));
   const wrapW = wrap.clientWidth > 100 ? wrap.clientWidth : window.innerWidth;
+  const wrapH = wrap.clientHeight > 100 ? wrap.clientHeight : window.innerHeight;
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   // fit-width base: leave a small margin so shadow/scrollbar don't clip
   const fitTargetW = Math.max(240, wrapW - 24);
+
+  // Spread: work out ONE scale that puts every page of the song on screen at
+  // once, side by side. Measured from the real page boxes rather than assumed —
+  // the library is scans and the pages are not all the same size.
+  wrap.classList.toggle("spread", viewSpread);
+  let spreadScale = 0;
+  if (viewSpread) {
+    let totalW = 0, maxH = 0;
+    for (let i = 1; i <= viewPdfDoc.numPages; i++) {
+      const vp = (await viewPdfDoc.getPage(i)).getViewport({ scale: 1 });
+      totalW += vp.width; maxH = Math.max(maxH, vp.height);
+    }
+    const gaps = 8 * (viewPdfDoc.numPages - 1) + 12;
+    spreadScale = Math.min((wrapW - gaps) / totalW, (wrapH - 12) / maxH);
+  }
 
   // Clear container only when starting a fresh render
   wrap.innerHTML = "";
@@ -573,7 +597,7 @@ async function renderViewPages() {
     const page = await viewPdfDoc.getPage(i);
     const baseVp = page.getViewport({ scale: 1 });
     const fitScale = fitTargetW / baseVp.width;
-    const cssScale = fitScale * viewZoom;
+    const cssScale = viewSpread ? spreadScale : fitScale * viewZoom;
     const vp = page.getViewport({ scale: cssScale * dpr });
 
     const container = document.createElement("div");
@@ -599,6 +623,8 @@ async function renderViewPages() {
 }
 
 function updateZoomUI() {
+  const btn = $("view-spread");
+  if (btn) btn.classList.toggle("on", viewSpread);
   const pct = Math.round(viewZoom * 100);
   $("zoom-pct").textContent = `${pct}%`;
   $("zoom-out").disabled = viewZoom <= VIEW_ZOOM_MIN + 0.001;
@@ -1758,6 +1784,9 @@ $("zoom-in").addEventListener("click", () => setViewZoom(viewZoom + VIEW_ZOOM_ST
 $("zoom-out").addEventListener("click", () => setViewZoom(viewZoom - VIEW_ZOOM_STEP));
 $("zoom-fit").addEventListener("click", () => setViewZoom(1.0));
 $("zoom-fith").addEventListener("click", fitToHeight);
+$("view-spread").addEventListener("click", toggleSpread);
+// Turning the phone is the moment the spread becomes worth having, so re-fit.
+window.addEventListener("resize", () => { if (viewSpread) renderViewPages(); });
 $("zoom-pct").addEventListener("click", () => setViewZoom(1.0));
 
 let viewResizeT = null;
