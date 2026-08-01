@@ -607,6 +607,9 @@ async function renderViewPages() {
   // once, side by side. Measured from the real page boxes rather than assumed —
   // the library is scans and the pages are not all the same size.
   wrap.classList.toggle("spread", viewSpread);
+  // On a phone held upright, two A4 pages side by side are unreadably small.
+  // Say so rather than let it look broken.
+  const portraitHint = viewSpread && wrap.clientHeight > wrap.clientWidth;
   let spreadScale = 0;
   if (viewSpread) {
     let totalW = 0, maxH = 0;
@@ -621,6 +624,12 @@ async function renderViewPages() {
   // Clear container only when starting a fresh render
   wrap.innerHTML = "";
   updateZoomUI();
+  if (portraitHint) {
+    const hint = document.createElement("div");
+    hint.className = "spread-hint";
+    hint.textContent = "打橫部機睇會大好多 ↻";
+    wrap.appendChild(hint);
+  }
 
   for (let i = 1; i <= viewPdfDoc.numPages; i++) {
     if (myToken !== viewRenderToken) return;

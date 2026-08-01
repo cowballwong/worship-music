@@ -202,7 +202,16 @@ body {
   overflow: hidden; gap: 8px; padding: 6px;
 }
 .viewer-canvas-wrap.spread .view-page-container { margin: 0; flex: 0 0 auto; }
+#view-spread { white-space: nowrap; font-size: 13px; padding: 4px 10px; }
 #view-spread.on { background: var(--accent, #C4763C); color: #fff; }
+
+/* Portrait is the wrong shape for this and saying so beats letting him wonder
+   why two A4 pages side by side are unreadable on a phone held upright. */
+.spread-hint {
+  position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+  background: rgba(38,34,30,.92); color: #f3ece1; font-size: 12px;
+  padding: 6px 12px; border-radius: 999px; pointer-events: none; z-index: 5;
+}
 .zoom-controls {
   display: flex; align-items: center; gap: 2px;
   padding-right: 6px; margin-right: 4px;
