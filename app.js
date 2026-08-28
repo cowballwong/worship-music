@@ -674,7 +674,22 @@ function setViewZoom(z) {
   const clamped = Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, z));
   if (Math.abs(clamped - viewZoom) < 0.001) return;
   viewZoom = clamped;
+  if (editMode) {
+    // Never re-render in edit mode: the canvases carry unsaved ink and pins.
+    updateZoomUI();
+    applyEditZoom();
+    return;
+  }
   renderViewPages();
+}
+
+// Edit-mode zoom is a CSS scale on the whole page stack, so canvas, overlay,
+// SVG ink and pins all scale together and nothing has to be redrawn. Panning
+// then comes free from .viewer-canvas-wrap's own overflow:auto.
+function applyEditZoom() {
+  const layer = document.getElementById("edit-zoom-layer");
+  if (!layer) return;
+  layer.style.transform = `scale(${viewZoom})`;
 }
 
 // Fit-to-height: set viewZoom so the (first) page's displayed height fills the
@@ -682,12 +697,13 @@ function setViewZoom(z) {
 // solve viewZoom = availH * w / (fitTargetW * h). All current sheets are single
 // page, so page 1's aspect is exact.
 async function fitToHeight() {
-  if (!viewPdfDoc) return;
+  const doc = editMode ? editPdfDoc : viewPdfDoc;
+  if (!doc) return;
   const wrap = $("viewer-canvas-wrap");
   const availH = (wrap.clientHeight > 80 ? wrap.clientHeight : window.innerHeight) - 24;
   const wrapW = wrap.clientWidth > 100 ? wrap.clientWidth : window.innerWidth;
   const fitTargetW = Math.max(240, wrapW - 24);
-  const page = await viewPdfDoc.getPage(1);
+  const page = await doc.getPage(1);
   const baseVp = page.getViewport({ scale: 1 });
   const z = (availH * baseVp.width) / (fitTargetW * baseVp.height);
   setViewZoom(z);
@@ -714,7 +730,7 @@ async function enterEditMode() {
   $("viewer-cancel").classList.remove("hidden");
   $("viewer-save").classList.remove("hidden");
   $("edit-toolbar").classList.remove("hidden");
-  $("viewer-zoom").classList.add("hidden");
+  // Zoom controls stay available in edit mode (they drive applyEditZoom).
   $("viewer-prev").disabled = true;
   $("viewer-next").disabled = true;
 
@@ -735,13 +751,41 @@ async function enterEditMode() {
     await new Promise((r) => requestAnimationFrame(r));
     const wrapW = wrap.clientWidth > 100 ? wrap.clientWidth : window.innerWidth;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const targetWidth = Math.max(320, Math.min(wrapW - 16, 1600));
+    // Identical fit-width base to renderViewPages() — entering edit must not
+    // change the page's size or shape. Zoom is applied as a CSS transform on
+    // #edit-zoom-layer afterwards, so the render stays at natural fit-width.
+    const targetWidth = Math.max(240, wrapW - 24);
+    const wrapH = wrap.clientHeight > 100 ? wrap.clientHeight : window.innerHeight;
+
+    // Spread is a VIEW setting that survives into edit — the wrap keeps its
+    // .spread class either way, which turns the stack into a flex row. Edit used
+    // to ignore that and still size every page to the full wrap width, so three
+    // fit-width pages were forced into one row and squashed horizontally while
+    // their inline height stayed: that is the "變形" reported on 2026-08-28.
+    // Measure the spread exactly as renderViewPages() does.
+    wrap.classList.toggle("spread", viewSpread);
+    wrap.classList.add("editing");
+    let spreadScale = 0;
+    if (viewSpread) {
+      let totalW = 0, maxH = 0;
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const vp0 = (await pdf.getPage(i)).getViewport({ scale: 1 });
+        totalW += vp0.width; maxH = Math.max(maxH, vp0.height);
+      }
+      const gaps = 8 * (pdf.numPages - 1) + 12;
+      spreadScale = Math.min((wrapW - gaps) / totalW, (wrapH - 12) / maxH);
+    }
+
+    const zoomLayer = document.createElement("div");
+    zoomLayer.id = "edit-zoom-layer";
+    zoomLayer.className = "edit-zoom-layer";
+    wrap.appendChild(zoomLayer);
 
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const baseVp = page.getViewport({ scale: 1 });
       editPageDims.push({ w: baseVp.width, h: baseVp.height });
-      const scale = targetWidth / baseVp.width;
+      const scale = viewSpread ? spreadScale : (targetWidth / baseVp.width);
       const vp = page.getViewport({ scale: scale * dpr });
 
       const container = document.createElement("div");
@@ -783,13 +827,15 @@ async function enterEditMode() {
         addPinDom(overlay, cssX, cssY, a.text, a.color, a.size, idx);
       });
 
-      wrap.appendChild(container);
+      zoomLayer.appendChild(container);
 
       // Render onto the canvas
       const ctx = canvas.getContext("2d");
       await page.render({ canvasContext: ctx, viewport: vp }).promise;
     }
     updateEditCount();
+    updateZoomUI();
+    applyEditZoom();
   } catch (e) {
     console.error(e);
     wrap.innerHTML = `<div class="empty"><div class="icon">⚠️</div>Edit prep failed: ${escape(e.message)}</div>`;
@@ -807,6 +853,7 @@ function exitEditMode() {
 function exitEditUi() {
   editMode = false;
   pendingAnnotations = [];
+  $("viewer-canvas-wrap")?.classList.remove("editing");
   $("viewer-edit").classList.remove("hidden");
   $("viewer-cancel").classList.add("hidden");
   $("viewer-save").classList.add("hidden");
@@ -821,6 +868,7 @@ function exitEditUi() {
 async function onOverlayTap(e, pageNum) {
   if (!editMode) return;
   if (activeTool === "eraser") return; // eraser uses pointerdown drag
+  if (activeTool === "pan") return;      // pan tool only scrolls
   if (DRAG_TOOLS.has(activeTool)) return; // drag tools use pointerdown
   const overlay = e.currentTarget;
   const rect = overlay.getBoundingClientRect();
@@ -1101,6 +1149,15 @@ function moveEraserCursor(c, cssX, cssY, radius) {
 }
 
 // ────────── DRAG TOOLS (pen / line / box / circle / arrow / eraser) ─────────
+// Live CSS scale of an overlay (1 when unzoomed). Measured rather than read off
+// viewZoom so it stays right even if something else transforms the stack.
+function overlayScale(overlay, rect) {
+  const w = overlay.offsetWidth;
+  if (!w || !rect || !rect.width) return 1;
+  const s = rect.width / w;
+  return s > 0.01 ? s : 1;
+}
+
 function attachDrawHandlers(overlay, pageNum) {
   overlay.addEventListener("pointerdown", (e) => {
     if (!editMode) return;
@@ -1109,9 +1166,12 @@ function attachDrawHandlers(overlay, pageNum) {
     e.preventDefault();
     overlay.setPointerCapture(e.pointerId);
     const rect = overlay.getBoundingClientRect();
-    const start = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    // getBoundingClientRect() is post-transform; the SVG/ink coordinate space is
+    // not. Divide by the live scale so ink lands under the stylus at any zoom.
+    const sc = overlayScale(overlay, rect);
+    const start = { x: (e.clientX - rect.left) / sc, y: (e.clientY - rect.top) / sc };
     if (isEraser) {
-      currentDrag = { tool: "eraser", pageNum, overlay, rect };
+      currentDrag = { tool: "eraser", pageNum, overlay, rect, scale: sc };
       const c = ensureEraserCursor(overlay);
       moveEraserCursor(c, start.x, start.y, eraserRadiusPx());
       eraseSwipe(overlay, pageNum, start.x, start.y);
@@ -1119,7 +1179,7 @@ function attachDrawHandlers(overlay, pageNum) {
     }
     const svgEls = createSvgForTool(overlay, activeTool);
     currentDrag = {
-      tool: activeTool, pageNum, overlay, rect,
+      tool: activeTool, pageNum, overlay, rect, scale: sc,
       points: [start], svgEls,
       color: $("edit-color").value,
       width: getPenWidth(),
@@ -1129,7 +1189,8 @@ function attachDrawHandlers(overlay, pageNum) {
   overlay.addEventListener("pointermove", (e) => {
     if (!currentDrag || currentDrag.overlay !== overlay) return;
     const rect = currentDrag.rect;
-    const p = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const sc = currentDrag.scale || 1;
+    const p = { x: (e.clientX - rect.left) / sc, y: (e.clientY - rect.top) / sc };
     if (currentDrag.tool === "eraser") {
       const c = overlay.querySelector(".eraser-cursor");
       if (c) moveEraserCursor(c, p.x, p.y, eraserRadiusPx());
@@ -1852,6 +1913,9 @@ document.querySelectorAll(".edit-tool").forEach((b) =>
     document.querySelectorAll(".edit-overlay").forEach((o) => {
       o.classList.toggle("drag-mode", DRAG_TOOLS.has(activeTool) || activeTool === "eraser");
       o.classList.toggle("eraser-mode", activeTool === "eraser");
+      // Pan tool: hand the touch back to the scroll container so one finger
+      // moves the sheet instead of drawing on it.
+      o.classList.toggle("pan-mode", activeTool === "pan");
     });
   })
 );

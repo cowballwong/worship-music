@@ -202,6 +202,15 @@ body {
   overflow: hidden; gap: 8px; padding: 6px;
 }
 .viewer-canvas-wrap.spread .view-page-container { margin: 0; flex: 0 0 auto; }
+/* The edit stack needs the same protection: without flex:0 0 auto a row of
+   pages is allowed to shrink horizontally while its inline height stays, which
+   is exactly how edit mode used to deform landscape spreads. */
+.viewer-canvas-wrap.spread .edit-page-container,
+.viewer-canvas-wrap.spread .edit-zoom-layer { margin: 0; flex: 0 0 auto; }
+.viewer-canvas-wrap.spread .edit-zoom-layer { flex-direction: row; gap: 8px; }
+/* Spread hides overflow so the view can never scroll; in edit mode zooming in
+   is the whole point, so let it scroll (that is also what makes panning work). */
+.viewer-canvas-wrap.spread.editing { overflow: auto; }
 #view-spread { white-space: nowrap; font-size: 13px; padding: 4px 10px; }
 #view-spread.on { background: var(--accent, #C4763C); color: #fff; }
 
@@ -234,6 +243,17 @@ body {
 }
 .edit-overlay.drag-mode {
   touch-action: none; /* let stylus/finger drag without page scrolling */
+}
+/* Pan tool: give the gesture back to .viewer-canvas-wrap so one finger scrolls. */
+.edit-overlay.pan-mode {
+  cursor: grab; touch-action: auto;
+}
+.edit-overlay.pan-mode:active { cursor: grabbing; }
+/* Edit-mode zoom happens here, as one CSS scale over the whole page stack, so
+   canvas + ink + pins scale together and nothing is re-rendered. */
+.edit-zoom-layer {
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  transform-origin: top center;
 }
 .edit-page-container,
 .edit-page-container canvas {
