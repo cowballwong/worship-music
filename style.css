@@ -205,12 +205,15 @@ body {
 /* The edit stack needs the same protection: without flex:0 0 auto a row of
    pages is allowed to shrink horizontally while its inline height stays, which
    is exactly how edit mode used to deform landscape spreads. */
-.viewer-canvas-wrap.spread .edit-page-container,
-.viewer-canvas-wrap.spread .edit-zoom-layer { margin: 0; flex: 0 0 auto; }
+.viewer-canvas-wrap.spread .edit-page-container { margin: 0; flex: 0 0 auto; }
 .viewer-canvas-wrap.spread .edit-zoom-layer { flex-direction: row; gap: 8px; }
 /* Spread hides overflow so the view can never scroll; in edit mode zooming in
-   is the whole point, so let it scroll (that is also what makes panning work). */
-.viewer-canvas-wrap.spread.editing { overflow: auto; }
+   is the whole point, so let it scroll (that is also what makes panning work).
+   Plain "center" alignment pushes a zoomed sheet off the left/top edge where it
+   cannot be scrolled back; the sizer's margin:auto centres it safely instead. */
+.viewer-canvas-wrap.spread.editing {
+  overflow: auto; justify-content: flex-start; align-items: flex-start;
+}
 #view-spread { white-space: nowrap; font-size: 13px; padding: 4px 10px; }
 #view-spread.on { background: var(--accent, #C4763C); color: #fff; }
 
@@ -244,16 +247,29 @@ body {
 .edit-overlay.drag-mode {
   touch-action: none; /* let stylus/finger drag without page scrolling */
 }
-/* Pan tool: give the gesture back to .viewer-canvas-wrap so one finger scrolls. */
+/* Pan tool: give the gesture back to .viewer-canvas-wrap so one finger scrolls
+   (pan only: two fingers are the app's own pinch, never the browser's zoom). */
 .edit-overlay.pan-mode {
-  cursor: grab; touch-action: auto;
+  cursor: grab; touch-action: pan-x pan-y;
 }
 .edit-overlay.pan-mode:active { cursor: grabbing; }
+/* In edit mode the browser must not zoom the page, or the toolbars zoom with
+   the sheet. Everything in the viewer may scroll but not pinch-zoom; the sheet's
+   pinch is handled in app.js (initEditPinch). :where() keeps this at zero
+   specificity so touch-action:none on drawing overlays and drag grips wins. */
+:where(.viewer.wm-editing, .viewer.wm-editing *) { touch-action: pan-x pan-y; }
 /* Edit-mode zoom happens here, as one CSS scale over the whole page stack, so
-   canvas + ink + pins scale together and nothing is re-rendered. */
+   canvas + ink + pins scale together and nothing is re-rendered. The sizer
+   takes the scaled size (set from app.js) so the scroll area matches; the layer
+   scales from its top-left corner inside it. */
+.edit-zoom-sizer {
+  position: relative; flex: 0 0 auto; margin: 0 auto;
+}
+.viewer-canvas-wrap.spread.editing .edit-zoom-sizer { margin: auto; }
 .edit-zoom-layer {
+  position: absolute; left: 0; top: 0; width: max-content;
   display: flex; flex-direction: column; align-items: center; gap: 12px;
-  transform-origin: top center;
+  transform-origin: 0 0;
 }
 .edit-page-container,
 .edit-page-container canvas {

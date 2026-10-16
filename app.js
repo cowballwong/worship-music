@@ -31,6 +31,9 @@ let pendingAnnotations = [];    // various types — see types below
 let activeTool = "pen";
 let currentDrag = null;         // active drag-tool stroke being drawn
 let pendingChordStamp = null;   // when set, next overlay tap stamps this chord text
+// Two-finger pinch in edit mode (see initEditPinch). d0/z0 = finger distance and
+// zoom when the pinch began; anchor = the sheet point under the fingers then.
+const editPinch = { active: false, d0: 0, z0: 1, anchor: null, endedAt: 0, raf: 0, last: null };
 
 // Read-only viewer state (PDF.js)
 let viewPdfDoc = null;          // pdfjs doc for current viewed song
@@ -670,14 +673,14 @@ function updateZoomUI() {
   $("zoom-in").disabled = viewZoom >= VIEW_ZOOM_MAX - 0.001;
 }
 
-function setViewZoom(z) {
+function setViewZoom(z, anchor) {
   const clamped = Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, z));
   if (Math.abs(clamped - viewZoom) < 0.001) return;
   viewZoom = clamped;
   if (editMode) {
-    // Never re-render in edit mode: the canvases carry unsaved ink and pins.
+    // Never re-render in edit mode: the overlays carry unsaved ink and pins.
     updateZoomUI();
-    applyEditZoom();
+    applyEditZoom(anchor);
     return;
   }
   renderViewPages();
@@ -685,11 +688,87 @@ function setViewZoom(z) {
 
 // Edit-mode zoom is a CSS scale on the whole page stack, so canvas, overlay,
 // SVG ink and pins all scale together and nothing has to be redrawn. Panning
-// then comes free from .viewer-canvas-wrap's own overflow:auto.
-function applyEditZoom() {
+// comes from .viewer-canvas-wrap's own overflow:auto.
+//
+// The layer scales from its top-left corner inside #edit-zoom-sizer, and the
+// sizer is given the SCALED size. A transform alone does not change layout
+// size, and scaling about "top center" pushed the left half of the sheet into
+// negative overflow, which no browser lets you scroll to.
+//
+// anchor = { u: {x,y} point in unscaled layer px, client: {x,y} screen px }:
+// after the zoom, the scroll is adjusted so that sheet point sits under that
+// screen point. Pinch passes its finger midpoint; the buttons default to the
+// middle of the view. noScroll leaves the scroll alone (first layout).
+function editAnchorAt(cx, cy) {
   const layer = document.getElementById("edit-zoom-layer");
-  if (!layer) return;
+  if (!layer) return null;
+  const lr = layer.getBoundingClientRect();
+  const s = layer.offsetWidth ? lr.width / layer.offsetWidth : 1;
+  return { u: { x: (cx - lr.left) / s, y: (cy - lr.top) / s }, client: { x: cx, y: cy } };
+}
+
+function applyEditZoom(anchor, noScroll) {
+  const layer = document.getElementById("edit-zoom-layer");
+  const sizer = document.getElementById("edit-zoom-sizer");
+  if (!layer || !sizer) return;
+  const wrap = $("viewer-canvas-wrap");
+  if (!anchor && !noScroll) {
+    const wr = wrap.getBoundingClientRect();
+    anchor = editAnchorAt(wr.left + wr.width / 2, wr.top + wr.height / 2);
+  }
   layer.style.transform = `scale(${viewZoom})`;
+  sizer.style.width = layer.offsetWidth * viewZoom + "px";
+  sizer.style.height = layer.offsetHeight * viewZoom + "px";
+  if (anchor && !noScroll) {
+    const lr = layer.getBoundingClientRect();
+    wrap.scrollLeft += lr.left + anchor.u.x * viewZoom - anchor.client.x;
+    wrap.scrollTop += lr.top + anchor.u.y * viewZoom - anchor.client.y;
+  }
+  scheduleEditSharpen();
+}
+
+// A CSS zoom stretches the page bitmap, so once the zoom settles, redraw each
+// page's PDF canvas at the new resolution. Only the PDF bitmap is swapped: ink
+// and pins live on the overlay next to it and are never touched. Capped in
+// pixels so a 4x spread cannot blow the iPad's canvas memory limit.
+let editSharpenT = null;
+let editSharpenToken = 0;
+const EDIT_CANVAS_MAX_PX = 8e6;
+function scheduleEditSharpen() {
+  clearTimeout(editSharpenT);
+  editSharpenT = setTimeout(sharpenEditCanvases, 300);
+}
+async function sharpenEditCanvases() {
+  if (!editMode || !editPdfDoc) return;
+  if (editPinch.active) return scheduleEditSharpen();
+  const my = ++editSharpenToken;
+  const doc = editPdfDoc;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const want = Math.max(1, viewZoom) * dpr; // device px per unscaled css px
+  for (const c of document.querySelectorAll("#edit-zoom-layer .edit-page-container")) {
+    const old = c.querySelector("canvas");
+    const cssW = parseFloat(c.style.width), cssH = parseFloat(c.style.height);
+    if (!old || !cssW || !cssH) continue;
+    let pxW = cssW * want, pxH = cssH * want;
+    if (pxW * pxH > EDIT_CANVAS_MAX_PX) {
+      const k = Math.sqrt(EDIT_CANVAS_MAX_PX / (pxW * pxH));
+      pxW *= k; pxH *= k;
+    }
+    if (Math.abs(pxW - old.width) / old.width < 0.15) continue;
+    try {
+      const page = await doc.getPage(parseInt(c.dataset.page, 10));
+      const base = page.getViewport({ scale: 1 });
+      const vp = page.getViewport({ scale: pxW / base.width });
+      const nc = document.createElement("canvas");
+      nc.width = Math.floor(vp.width);
+      nc.height = Math.floor(vp.height);
+      nc.style.width = "100%";
+      nc.style.height = "100%";
+      await page.render({ canvasContext: nc.getContext("2d"), viewport: vp }).promise;
+      if (my !== editSharpenToken || !editMode || doc !== editPdfDoc || !old.isConnected) return;
+      old.replaceWith(nc);
+    } catch (e) { console.warn("sharpen", e); return; }
+  }
 }
 
 // Fit-to-height: set viewZoom so the (first) page's displayed height fills the
@@ -733,6 +812,7 @@ async function enterEditMode() {
   // Zoom controls stay available in edit mode (they drive applyEditZoom).
   $("viewer-prev").disabled = true;
   $("viewer-next").disabled = true;
+  lockPageZoom(true);
 
   toast("Edit mode — tap on the score to add chord/note");
 
@@ -776,10 +856,14 @@ async function enterEditMode() {
       spreadScale = Math.min((wrapW - gaps) / totalW, (wrapH - 12) / maxH);
     }
 
+    const zoomSizer = document.createElement("div");
+    zoomSizer.id = "edit-zoom-sizer";
+    zoomSizer.className = "edit-zoom-sizer";
     const zoomLayer = document.createElement("div");
     zoomLayer.id = "edit-zoom-layer";
     zoomLayer.className = "edit-zoom-layer";
-    wrap.appendChild(zoomLayer);
+    zoomSizer.appendChild(zoomLayer);
+    wrap.appendChild(zoomSizer);
 
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
@@ -828,6 +912,7 @@ async function enterEditMode() {
       });
 
       zoomLayer.appendChild(container);
+      applyEditZoom(null, true); // keep the sizer in step while pages arrive
 
       // Render onto the canvas
       const ctx = canvas.getContext("2d");
@@ -835,7 +920,7 @@ async function enterEditMode() {
     }
     updateEditCount();
     updateZoomUI();
-    applyEditZoom();
+    applyEditZoom(null, true);
   } catch (e) {
     console.error(e);
     wrap.innerHTML = `<div class="empty"><div class="icon">⚠️</div>Edit prep failed: ${escape(e.message)}</div>`;
@@ -854,6 +939,10 @@ function exitEditUi() {
   editMode = false;
   pendingAnnotations = [];
   $("viewer-canvas-wrap")?.classList.remove("editing");
+  lockPageZoom(false);
+  editPinch.active = false;
+  clearTimeout(editSharpenT);
+  editSharpenToken++;
   $("viewer-edit").classList.remove("hidden");
   $("viewer-cancel").classList.add("hidden");
   $("viewer-save").classList.add("hidden");
@@ -870,13 +959,17 @@ async function onOverlayTap(e, pageNum) {
   if (activeTool === "eraser") return; // eraser uses pointerdown drag
   if (activeTool === "pan") return;      // pan tool only scrolls
   if (DRAG_TOOLS.has(activeTool)) return; // drag tools use pointerdown
+  if (editPinch.active || Date.now() - editPinch.endedAt < 400) return; // fingers lifting after a pinch
   const overlay = e.currentTarget;
   const rect = overlay.getBoundingClientRect();
-  const tapX = e.clientX - rect.left;
-  const tapY = e.clientY - rect.top;
+  // rect is post-zoom (screen px); pins are positioned in the overlay's own,
+  // unscaled px. Convert, or a pin tapped at 2x lands twice as far out.
+  const sc = overlayScale(overlay, rect);
+  const tapX = (e.clientX - rect.left) / sc;
+  const tapY = (e.clientY - rect.top) / sc;
   const dim = editPageDims[pageNum - 1];
-  const pdfX = (tapX / rect.width) * dim.w;
-  const pdfYTop = (tapY / rect.height) * dim.h;
+  const pdfX = (tapX / (rect.width / sc)) * dim.w;
+  const pdfYTop = (tapY / (rect.height / sc)) * dim.h;
   const pdfY = dim.h - pdfYTop;
 
   if (activeTool === "text") {
@@ -945,19 +1038,20 @@ function addPinDom(overlay, cssX, cssY, text, color, size, idx) {
   });
   // Drag-to-reposition via the grip (updates the saved PDF coords on drop).
   const grip = pin.querySelector(".pin-grip");
-  let dragging = false, sx = 0, sy = 0, startLeft = 0, startTop = 0;
+  let dragging = false, sx = 0, sy = 0, startLeft = 0, startTop = 0, gsc = 1;
   grip.addEventListener("pointerdown", (e) => {
     e.stopPropagation(); e.preventDefault();
     dragging = true;
     sx = e.clientX; sy = e.clientY;
+    gsc = overlayScale(overlay, overlay.getBoundingClientRect());
     startLeft = parseFloat(pin.style.left) || 0;
     startTop = parseFloat(pin.style.top) || 0;
     try { grip.setPointerCapture(e.pointerId); } catch {}
   });
   grip.addEventListener("pointermove", (e) => {
     if (!dragging) return;
-    pin.style.left = (startLeft + e.clientX - sx) + "px";
-    pin.style.top = (startTop + e.clientY - sy) + "px";
+    pin.style.left = (startLeft + (e.clientX - sx) / gsc) + "px";
+    pin.style.top = (startTop + (e.clientY - sy) / gsc) + "px";
   });
   grip.addEventListener("pointerup", (e) => {
     if (!dragging) return;
@@ -966,13 +1060,13 @@ function addPinDom(overlay, cssX, cssY, text, color, size, idx) {
     const i = parseInt(pin.dataset.idx, 10);
     const ann = pendingAnnotations[i];
     if (!ann) return;
-    const rect = overlay.getBoundingClientRect();
     const dim = editPageDims[(parseInt(overlay.dataset.page, 10) || 1) - 1];
-    if (!dim) return;
+    if (!dim || !overlay.offsetWidth) return;
     const newCssX = parseFloat(pin.style.left) || 0;
     const newCssY = parseFloat(pin.style.top) || 0;
-    ann.x = (newCssX / rect.width) * dim.w;
-    ann.y = dim.h - (newCssY / rect.height) * dim.h;
+    // offsetWidth/Height are the unscaled size the pin's left/top live in.
+    ann.x = (newCssX / overlay.offsetWidth) * dim.w;
+    ann.y = dim.h - (newCssY / overlay.offsetHeight) * dim.h;
   });
   overlay.appendChild(pin);
 }
@@ -1046,7 +1140,10 @@ function eraserRadiusPx() {
 }
 
 function eraseSwipe(overlay, pageNum, cssX, cssY) {
-  const rect = overlay.getBoundingClientRect();
+  // cssX/cssY are unscaled overlay px; work in that space at any zoom.
+  const box = overlay.getBoundingClientRect();
+  const esc = overlayScale(overlay, box);
+  const rect = { width: box.width / esc, height: box.height / esc };
   const dim = editPageDims[pageNum - 1];
   const radius = eraserRadiusPx();
   const r2 = radius * radius;
@@ -1115,8 +1212,8 @@ function eraseSwipe(overlay, pageNum, cssX, cssY) {
       let hit = false;
       els.forEach((el) => {
         const er = el.getBoundingClientRect();
-        const left = er.left - rect.left, top = er.top - rect.top;
-        const right = er.right - rect.left, bot = er.bottom - rect.top;
+        const left = (er.left - box.left) / esc, top = (er.top - box.top) / esc;
+        const right = (er.right - box.left) / esc, bot = (er.bottom - box.top) / esc;
         if (cssX + radius >= left && cssX - radius <= right &&
             cssY + radius >= top && cssY - radius <= bot) {
           hit = true;
@@ -1160,7 +1257,7 @@ function overlayScale(overlay, rect) {
 
 function attachDrawHandlers(overlay, pageNum) {
   overlay.addEventListener("pointerdown", (e) => {
-    if (!editMode) return;
+    if (!editMode || editPinch.active) return;
     const isEraser = activeTool === "eraser";
     if (!DRAG_TOOLS.has(activeTool) && !isEraser) return;
     e.preventDefault();
@@ -1171,7 +1268,7 @@ function attachDrawHandlers(overlay, pageNum) {
     const sc = overlayScale(overlay, rect);
     const start = { x: (e.clientX - rect.left) / sc, y: (e.clientY - rect.top) / sc };
     if (isEraser) {
-      currentDrag = { tool: "eraser", pageNum, overlay, rect, scale: sc };
+      currentDrag = { tool: "eraser", pageNum, overlay, rect, scale: sc, pointerId: e.pointerId };
       const c = ensureEraserCursor(overlay);
       moveEraserCursor(c, start.x, start.y, eraserRadiusPx());
       eraseSwipe(overlay, pageNum, start.x, start.y);
@@ -1179,7 +1276,7 @@ function attachDrawHandlers(overlay, pageNum) {
     }
     const svgEls = createSvgForTool(overlay, activeTool);
     currentDrag = {
-      tool: activeTool, pageNum, overlay, rect, scale: sc,
+      tool: activeTool, pageNum, overlay, rect, scale: sc, pointerId: e.pointerId,
       points: [start], svgEls,
       color: $("edit-color").value,
       width: getPenWidth(),
@@ -1342,7 +1439,10 @@ function pointsToSvgD(pts) {
 function finalizeDrag(d) {
   const overlay = d.overlay, rect = d.rect;
   const dim = editPageDims[d.pageNum - 1];
-  const cssW = rect.width, cssH = rect.height;
+  // d.points are in unscaled overlay px (divided by the zoom on the way in),
+  // so the page size must be unscaled too or ink saves at 1/zoom of its place.
+  const dsc = d.scale || 1;
+  const cssW = rect.width / dsc, cssH = rect.height / dsc;
   const sx = dim.w / cssW, sy = dim.h / cssH;
   const flip = (p) => ({ x: p.x * sx, y: dim.h - p.y * sy });
   const pdfWidth = d.width * sx;
@@ -1888,6 +1988,126 @@ $("view-spread").addEventListener("click", toggleSpread);
 // Turning the phone is the moment the spread becomes worth having, so re-fit.
 window.addEventListener("resize", () => { if (viewSpread) renderViewPages(); });
 $("zoom-pct").addEventListener("click", () => setViewZoom(1.0));
+
+// ────────────────────────────────────────────────
+// EDIT MODE PINCH — the sheet zooms, the tools do not (Anzon, 2026-10-16:
+// 「edit mode 我用兩指zoom in out, 啲工具唔好跟住zoom」).
+//
+// A native browser pinch zooms the whole page: toolbar, capo popover and all.
+// So in edit mode the browser's page zoom is switched off and two fingers drive
+// the app's own edit zoom instead (the CSS scale on #edit-zoom-layer that the
+// −/+ buttons already use). The toolbars are never scaled because the page
+// never is. Nothing is lost on sharpness: the sheet is a canvas bitmap, which a
+// native pinch only stretches too, and sharpenEditCanvases() redraws it at the
+// new zoom once the fingers stop.
+//
+// View mode is untouched: native pinch still works there as before.
+// ────────────────────────────────────────────────
+const VIEWPORT_DEFAULT = "width=device-width, initial-scale=1, viewport-fit=cover";
+const VIEWPORT_LOCKED = "width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover";
+function lockPageZoom(on) {
+  // maximum-scale=1 makes Android Chrome drop any page zoom already in place
+  // and stops iOS auto-zooming into the small number/select inputs on focus.
+  const meta = document.querySelector('meta[name="viewport"]');
+  if (meta) meta.setAttribute("content", on ? VIEWPORT_LOCKED : VIEWPORT_DEFAULT);
+  $("viewer").classList.toggle("wm-editing", !!on);
+}
+
+function cancelCurrentDrag() {
+  if (!currentDrag) return;
+  const d = currentDrag;
+  currentDrag = null;
+  try { d.overlay.releasePointerCapture(d.pointerId); } catch {}
+  (d.svgEls || []).forEach((el) => el.remove());
+  d.overlay?.querySelector(".eraser-cursor")?.remove();
+}
+
+(function initEditPinch() {
+  const wrap = $("viewer-canvas-wrap");
+  const viewer = $("viewer");
+  const mid = (t) => ({ x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 });
+  const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY) || 1;
+
+  // The first finger's pointerdown has already started a pen stroke by the time
+  // the second lands. Count touch pointers and, on the second, throw that stroke
+  // away and keep the second finger from starting one of its own.
+  const touchPtrs = new Set();
+  wrap.addEventListener("pointerdown", (e) => {
+    if (!editMode || e.pointerType !== "touch") return;
+    touchPtrs.add(e.pointerId);
+    if (touchPtrs.size >= 2) {
+      e.stopPropagation();
+      cancelCurrentDrag();
+    }
+  }, true);
+  const dropPtr = (e) => touchPtrs.delete(e.pointerId);
+  wrap.addEventListener("pointerup", dropPtr, true);
+  wrap.addEventListener("pointercancel", dropPtr, true);
+
+  function begin(touches) {
+    cancelCurrentDrag();
+    const m = mid(touches);
+    editPinch.active = true;
+    editPinch.d0 = dist(touches);
+    editPinch.z0 = viewZoom;
+    editPinch.anchor = editAnchorAt(m.x, m.y);
+  }
+  function frame() {
+    editPinch.raf = 0;
+    const t = editPinch.last;
+    if (!editPinch.active || !t || !editPinch.anchor) return;
+    const m = mid(t);
+    const z = editPinch.z0 * dist(t) / editPinch.d0;
+    // Same sheet point stays under the fingers: zoom about the midpoint, and
+    // moving both fingers together pans.
+    const anchor = { u: editPinch.anchor.u, client: m };
+    const clamped = Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, z));
+    if (Math.abs(clamped - viewZoom) < 0.001) applyEditZoom(anchor);
+    else setViewZoom(clamped, anchor);
+  }
+  function end() {
+    if (!editPinch.active) return;
+    editPinch.active = false;
+    editPinch.endedAt = Date.now();
+    editPinch.last = null;
+    scheduleEditSharpen();
+  }
+
+  wrap.addEventListener("touchstart", (e) => {
+    if (!editMode) return;
+    if (e.touches.length >= 2) {
+      e.preventDefault();
+      begin(e.touches);
+    }
+  }, { capture: true, passive: false });
+  wrap.addEventListener("touchmove", (e) => {
+    if (!editMode || !editPinch.active) return;
+    if (e.cancelable) e.preventDefault();
+    if (e.touches.length < 2) return;
+    editPinch.last = [
+      { clientX: e.touches[0].clientX, clientY: e.touches[0].clientY },
+      { clientX: e.touches[1].clientX, clientY: e.touches[1].clientY },
+    ];
+    if (!editPinch.raf) editPinch.raf = requestAnimationFrame(frame);
+  }, { capture: true, passive: false });
+  const touchEnd = (e) => {
+    if (e.touches.length < 2) end();
+    if (e.touches.length === 0) touchPtrs.clear();
+  };
+  wrap.addEventListener("touchend", touchEnd, true);
+  wrap.addEventListener("touchcancel", touchEnd, true);
+
+  // Belt and braces against the browser's own page zoom while editing, for a
+  // pinch that starts on the toolbar rather than the sheet. The CSS
+  // touch-action on .viewer.wm-editing does this on Chrome; iOS Safari also
+  // needs its proprietary gesture events cancelled.
+  viewer.addEventListener("touchmove", (e) => {
+    if (editMode && e.touches.length > 1 && e.cancelable) e.preventDefault();
+  }, { passive: false });
+  ["gesturestart", "gesturechange", "gestureend"].forEach((type) =>
+    document.addEventListener(type, (e) => { if (editMode) e.preventDefault(); }, { passive: false })
+  );
+})();
 
 let viewResizeT = null;
 window.addEventListener("resize", () => {
