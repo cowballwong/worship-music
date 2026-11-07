@@ -868,7 +868,10 @@ async function enterEditMode() {
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const baseVp = page.getViewport({ scale: 1 });
-      editPageDims.push({ w: baseVp.width, h: baseVp.height });
+      // rot + box let saveAndUpload() map what you SEE back to the PDF's own (unrotated) space;
+      // without them a page with /Rotate 90 saved its ink shifted and turned 90 degrees (7 Nov 2026).
+      editPageDims.push({ w: baseVp.width, h: baseVp.height,
+                          rot: (((page.rotate || 0) % 360) + 360) % 360, box: page.view });
       const scale = viewSpread ? spreadScale : (targetWidth / baseVp.width);
       const vp = page.getViewport({ scale: scale * dpr });
 
@@ -1503,6 +1506,27 @@ function finalizeDrag(d) {
   updateEditCount();
 }
 
+// Displayed space (what PDF.js shows, rotation applied; x from the left, y from the BOTTOM of the
+// displayed page, which is how every edit tool stores its points) -> PDF user space (unrotated, the
+// space pdf-lib draws in). Matches PDF.js viewport geometry for /Rotate 0, 90, 180, 270.
+function dispToUser(pageNum, x, yb) {
+  const d = editPageDims[pageNum - 1];
+  if (!d) return { x, y: yb };
+  const [x0, y0, x1, y1] = d.box || [0, 0, d.w, d.h];
+  const bw = x1 - x0, bh = y1 - y0;
+  const t = d.h - yb; // distance from the TOP of the displayed page
+  switch (d.rot) {
+    case 90:  return { x: x0 + t,      y: y0 + x };
+    case 180: return { x: x0 + bw - x, y: y0 + t };
+    case 270: return { x: x0 + bw - t, y: y0 + bh - x };
+    default:  return { x: x0 + x,      y: y0 + yb };
+  }
+}
+function dispRectToUser(pageNum, x, y, w, h) {
+  const a = dispToUser(pageNum, x, y), b = dispToUser(pageNum, x + w, y + h);
+  return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
+}
+
 async function saveAndUpload() {
   if (!editMode) return;
   if (!oauthToken?.access_token) return toast("Not signed in.");
@@ -1529,19 +1553,21 @@ async function saveAndUpload() {
       if (a.type === "text") {
         continue; // chord/text markup is stored as re-editable metadata, not baked
       } else if (a.type === "highlight") {
+        const r = dispRectToUser(a.page, a.x, a.y, a.w, a.h);
         page.drawRectangle({
-          x: a.x,
-          y: a.y,
-          width: a.w,
-          height: a.h,
+          x: r.x,
+          y: r.y,
+          width: r.w,
+          height: r.h,
           color: rgb(c.r, c.g, c.b),
           opacity: 0.35,
         });
       } else if (a.type === "ink") {
-        for (let i = 1; i < a.points.length; i++) {
+        const pts = a.points.map((q) => dispToUser(a.page, q.x, q.y));
+        for (let i = 1; i < pts.length; i++) {
           page.drawLine({
-            start: { x: a.points[i - 1].x, y: a.points[i - 1].y },
-            end:   { x: a.points[i].x,     y: a.points[i].y     },
+            start: pts[i - 1],
+            end:   pts[i],
             thickness: Math.max(0.8, a.width),
             color: rgb(c.r, c.g, c.b),
             lineCap: window.PDFLib.LineCapStyle.Round,
@@ -1549,39 +1575,43 @@ async function saveAndUpload() {
         }
       } else if (a.type === "line") {
         page.drawLine({
-          start: a.p1, end: a.p2,
+          start: dispToUser(a.page, a.p1.x, a.p1.y), end: dispToUser(a.page, a.p2.x, a.p2.y),
           thickness: Math.max(0.8, a.width),
           color: rgb(c.r, c.g, c.b),
           lineCap: window.PDFLib.LineCapStyle.Round,
         });
       } else if (a.type === "arrow") {
+        const A1 = dispToUser(a.page, a.p1.x, a.p1.y), A2 = dispToUser(a.page, a.p2.x, a.p2.y);
         page.drawLine({
-          start: a.p1, end: a.p2,
+          start: A1, end: A2,
           thickness: Math.max(0.8, a.width),
           color: rgb(c.r, c.g, c.b),
           lineCap: window.PDFLib.LineCapStyle.Round,
         });
-        const dx = a.p2.x - a.p1.x, dy = a.p2.y - a.p1.y;
+        const dx = A2.x - A1.x, dy = A2.y - A1.y;
         const len = Math.hypot(dx, dy);
         const ang = Math.atan2(dy, dx);
         const head = Math.min(18, len * 0.25);
         const t = Math.max(0.8, a.width);
         const cosA = Math.cos, sinA = Math.sin;
-        const a1 = { x: a.p2.x - head * cosA(ang - Math.PI / 6), y: a.p2.y - head * sinA(ang - Math.PI / 6) };
-        const a2 = { x: a.p2.x - head * cosA(ang + Math.PI / 6), y: a.p2.y - head * sinA(ang + Math.PI / 6) };
-        page.drawLine({ start: a1, end: a.p2, thickness: t, color: rgb(c.r, c.g, c.b), lineCap: window.PDFLib.LineCapStyle.Round });
-        page.drawLine({ start: a2, end: a.p2, thickness: t, color: rgb(c.r, c.g, c.b), lineCap: window.PDFLib.LineCapStyle.Round });
+        const a1 = { x: A2.x - head * cosA(ang - Math.PI / 6), y: A2.y - head * sinA(ang - Math.PI / 6) };
+        const a2 = { x: A2.x - head * cosA(ang + Math.PI / 6), y: A2.y - head * sinA(ang + Math.PI / 6) };
+        page.drawLine({ start: a1, end: A2, thickness: t, color: rgb(c.r, c.g, c.b), lineCap: window.PDFLib.LineCapStyle.Round });
+        page.drawLine({ start: a2, end: A2, thickness: t, color: rgb(c.r, c.g, c.b), lineCap: window.PDFLib.LineCapStyle.Round });
       } else if (a.type === "box") {
+        const r = dispRectToUser(a.page, a.x, a.y, a.w, a.h);
         page.drawRectangle({
-          x: a.x, y: a.y, width: a.w, height: a.h,
+          x: r.x, y: r.y, width: r.w, height: r.h,
           borderColor: rgb(c.r, c.g, c.b),
           borderWidth: Math.max(0.8, a.width),
           color: undefined, opacity: 0,
         });
       } else if (a.type === "circle") {
+        const C = dispToUser(a.page, a.cx, a.cy);
+        const sw = (editPageDims[a.page - 1] || {}).rot % 180 === 90; // a quarter turn swaps the radii
         page.drawEllipse({
-          x: a.cx, y: a.cy,
-          xScale: Math.max(1, a.rx), yScale: Math.max(1, a.ry),
+          x: C.x, y: C.y,
+          xScale: Math.max(1, sw ? a.ry : a.rx), yScale: Math.max(1, sw ? a.rx : a.ry),
           borderColor: rgb(c.r, c.g, c.b),
           borderWidth: Math.max(0.8, a.width),
           color: undefined, opacity: 0,
