@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@400;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=20261016">
+<link rel="stylesheet" href="style.css?v=20261108a">
 <!-- PDF.js v4 (legacy ESM build for broad mobile compat) -->
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/legacy/build/pdf.min.mjs" type="module"></script>
 <!-- pdf-lib for PDF mutation (FreeText annotations) -->
@@ -29,6 +29,8 @@
       <button id="theme-btn" class="btn btn-ghost" aria-label="Toggle theme" title="Toggle day/night">🌙</button>
     </div>
   </header>
+
+  <div id="offline-banner" class="offline-banner hidden" role="status"></div>
 
   <nav class="tabs">
     <button class="tab active" data-view="library">📚 Library <span class="zh">樂譜</span></button>
@@ -62,6 +64,7 @@
       <div class="viewer-title">
         <span id="viewer-name">—</span>
         <span id="viewer-progress" class="muted small"></span>
+        <span id="offline-status" class="offline-status hidden" role="status" aria-live="polite"></span>
       </div>
       <div class="viewer-actions">
         <div id="viewer-zoom" class="zoom-controls">
@@ -183,7 +186,7 @@
   <!-- Status / toast -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="config.js?v=20261016"></script>
-  <script type="module" src="app.js?v=20261016"></script>
+  <script src="config.js?v=20261108a"></script>
+  <script type="module" src="app.js?v=20261108a"></script>
 </body>
 </html>

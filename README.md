@@ -59,6 +59,15 @@ A `playlists/2026-05-10.json` file in Drive looks like:
 
 `songs` are matched against PDF filenames in `01_Lib/` (without `.pdf` extension).
 
+## Offline (semi-offline at church)
+
+- Opening a playlist while online stores every song in it on the device (Cache Storage, `wm-sheets-v1`), with a status line under the song title: 「離線準備中 3/6」 → 「✓ 已可離線使用」. Playlist cards show 「✓ 已儲低」.
+- Library and playlist listings are network-first (8 s timeout) with the last good copy as fallback (`wm-data-v1`).
+- `sw.js` keeps the app shell, PDF.js, pdf-lib and fonts (`wm-shell-<VERSION>`). Drive API and Google sign-in are never cached.
+- Offline, Edit and all saves are refused with a message; unsaved markup stays on screen.
+- **Deploy rule:** bump `VERSION` in `sw.js` and the matching `?v=` in `index.html` and the `offline.js` import in `app.js` on every release.
+- iOS Safari may clear site storage after ~7 days without a visit: open the playlist the night before or on the morning.
+
 ## Development
 
 It's a static site — open `index.html` directly, or:

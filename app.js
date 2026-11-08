@@ -6,6 +6,7 @@
 import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/legacy/build/pdf.min.mjs";
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/legacy/build/pdf.worker.min.mjs";
+import * as off from "./offline.js?v=20261108a";
 
 const cfg = window.WORSHIP_CONFIG;
 const $ = (id) => document.getElementById(id);
@@ -66,6 +67,10 @@ function authedHeaders() {
   return {};
 }
 
+// Drive listings are network-first with a timeout and fall back to the last
+// good copy (offline.js), so the library and playlists still show at church.
+let dataFromCache = false;      // true once any listing came from the saved copy
+
 async function driveListFolder(folderId) {
   const url =
     `${API}/files` +
@@ -73,9 +78,14 @@ async function driveListFolder(folderId) {
     `&fields=files(id,name,mimeType,size,modifiedTime)` +
     `&pageSize=1000` +
     `&key=${cfg.API_KEY}`;
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`Drive list failed: ${r.status}`);
-  return (await r.json()).files || [];
+  let res;
+  try {
+    res = await off.netFirstJson(url, `list:${folderId}`);
+  } catch (e) {
+    throw new Error(off.isOffline() ? "冇網絡,而部機未有儲低嘅歌單" : `Drive list failed: ${e.message}`);
+  }
+  if (res.fromCache) { dataFromCache = true; updateOfflineBanner(); }
+  return res.json.files || [];
 }
 
 async function findSubfolderId(parentId, name) {
@@ -87,9 +97,14 @@ async function findSubfolderId(parentId, name) {
     )}` +
     `&fields=files(id,name)` +
     `&key=${cfg.API_KEY}`;
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`Drive subfolder lookup failed: ${r.status}`);
-  const f = (await r.json()).files || [];
+  let res;
+  try {
+    res = await off.netFirstJson(url, `sub:${parentId}:${name}`);
+  } catch (e) {
+    throw new Error(off.isOffline() ? "冇網絡,而部機未有儲低嘅歌單" : `Drive subfolder lookup failed: ${e.message}`);
+  }
+  if (res.fromCache) { dataFromCache = true; updateOfflineBanner(); }
+  const f = res.json.files || [];
   return f[0]?.id || null;
 }
 
@@ -143,9 +158,31 @@ async function fetchPdfBytes(fileId) {
   return await r2.arrayBuffer();
 }
 
+/**
+ * A song sheet's bytes, from the device first.
+ * Up-to-date stored copy → used with no download. Stale copy → re-downloaded
+ * when online, used as-is when the download fails (offline / weak signal).
+ * Every download is stored, so a sheet viewed once also works offline.
+ */
+async function getSheetBytes(file) {
+  const stored = await off.getSheet(file.id);
+  if (stored && (stored.mtime === (file.modifiedTime || "") || off.isOffline())) return stored.buf;
+  try {
+    const buf = await fetchPdfBytes(file.id);
+    await off.putSheet(file.id, file.modifiedTime, buf);
+    return buf;
+  } catch (e) {
+    if (stored) return stored.buf;
+    if (off.isOffline() || e instanceof TypeError) throw new Error(OFFLINE_SHEET_MSG);
+    throw e;
+  }
+}
+const OFFLINE_SHEET_MSG = "呢首歌未儲落部機,冇網睇唔到。下次有網時開一次個歌單,就會自動儲低。";
+const OFFLINE_EDIT_MSG = "冇網絡:而家唔可以儲存。你啲改動仲喺度,有網時再撳 💾 Save。";
+
 async function uploadPdfBytes(fileId, bytes) {
   if (!oauthToken?.access_token) throw new Error("Not signed in");
-  const r = await fetch(`${UPLOAD}/files/${fileId}?uploadType=media`, {
+  const r = await fetch(`${UPLOAD}/files/${fileId}?uploadType=media&fields=id,modifiedTime`, {
     method: "PATCH",
     headers: { ...authedHeaders(), "Content-Type": "application/pdf" },
     body: bytes,
@@ -444,7 +481,9 @@ function renderPlaylists() {
       <div class="songs">${escape((p.songs || []).join(" · "))}</div>
       <div class="pl-export-pill" data-export="1" title="Download combined PDF">📥 PDF</div>
       ${oauthToken ? `<div class="pl-edit-pill" data-edit="1">✏️ Edit</div>` : ""}
+      <div class="pl-offline-badge hidden"></div>
     `;
+    markPlaylistOffline(p, card.querySelector(".pl-offline-badge"));
     card.addEventListener("click", (e) => {
       if (e.target.dataset.export) {
         exportPlaylistCombined(p);
@@ -482,7 +521,7 @@ async function exportPlaylistCombined(p) {
     const merged = await PDFDocument.create();
 
     for (const { file } of found) {
-      const buf = await fetchPdfBytes(file.id);
+      const buf = await getSheetBytes(file);
       const src = await PDFDocument.load(buf, { ignoreEncryption: true });
       const pages = await merged.copyPages(src, src.getPageIndices());
       pages.forEach((pg) => merged.addPage(pg));
@@ -546,13 +585,97 @@ async function playPlaylist(p) {
     );
     return;
   }
+  // Offline: only open a playlist that has at least one song on the device,
+  // and say plainly when it has none.
+  if (off.isOffline()) {
+    const have = await Promise.all(songs.map((s) => off.hasSheet(s.file.id)));
+    const n = have.filter(Boolean).length;
+    if (n === 0) {
+      toast("📴 冇網絡,呢個歌單未儲落部機,開唔到。有網時開一次,啲歌就會自動儲低。", 9000);
+      return;
+    }
+    if (n < songs.length) toast(`📴 冇網絡:${songs.length} 首入面有 ${n} 首已儲低,其餘睇唔到。`, 7000);
+  }
   viewerQueue = songs;
   viewerIndex = 0;
   $("viewer").classList.remove("hidden");
   exitEditUi();
+  prefetchPlaylist(songs);
   await new Promise((r) => requestAnimationFrame(r));
   await showCurrent();
 }
+
+// ────────────────────────────────────────────────
+// Offline preload — opening a playlist online stores every song on the device
+// ────────────────────────────────────────────────
+let prefetchToken = 0;
+let prefetchFailed = [];
+
+function setOfflineStatus(text, cls = "") {
+  const el = $("offline-status");
+  el.textContent = text;
+  el.className = `offline-status ${cls}`.trim();
+  el.classList.toggle("hidden", !text);
+}
+
+async function prefetchPlaylist(songs) {
+  const my = ++prefetchToken;
+  if (!off.hasCacheApi()) { setOfflineStatus(""); return; }
+  off.askPersist();
+  const total = songs.length;
+  let done = 0;
+  const failed = [];
+  const step = () => { if (my === prefetchToken) setOfflineStatus(`離線準備中 ${done}/${total}`, "busy"); };
+  step();
+  // Two at a time: bursts of Drive alt=media downloads trip its abuse cooldown.
+  const queue = songs.slice();
+  async function worker() {
+    while (queue.length) {
+      const s = queue.shift();
+      try {
+        if (!(await off.hasSheet(s.file.id, s.file.modifiedTime || ""))) await getSheetBytes(s.file);
+      } catch (e) {
+        // offline with an older stored copy still counts as available
+        if (!(await off.hasSheet(s.file.id))) failed.push(s.name);
+      }
+      done++;
+      step();
+    }
+  }
+  await Promise.all([worker(), worker()]);
+  if (my !== prefetchToken) return;
+  prefetchFailed = failed;
+  if (failed.length === 0) setOfflineStatus("✓ 已可離線使用", "ok");
+  else setOfflineStatus(`⚠ ${failed.length} 首未能離線:${failed.join("、")}(撳一下再試)`, "warn");
+  document.querySelectorAll(".pl-offline-badge").forEach((b) => b._refresh && b._refresh());
+}
+
+async function markPlaylistOffline(p, badge) {
+  if (!badge || !off.hasCacheApi()) return;
+  badge._refresh = async () => {
+    const files = (p.songs || []).map((t) => libBySongTitle[t]).filter(Boolean);
+    if (!files.length) return;
+    const have = await Promise.all(files.map((f) => off.hasSheet(f.id)));
+    const n = have.filter(Boolean).length;
+    badge.classList.toggle("hidden", n === 0);
+    badge.classList.toggle("partial", n > 0 && n < files.length);
+    badge.textContent = n === files.length ? "✓ 已儲低" : `${n}/${files.length} 已儲低`;
+    badge.title = "可以冇網用 · available offline";
+  };
+  badge._refresh();
+}
+
+function updateOfflineBanner() {
+  const b = $("offline-banner");
+  if (!b) return;
+  const offline = off.isOffline();
+  b.classList.toggle("hidden", !offline && !dataFromCache);
+  b.textContent = offline
+    ? "📴 離線模式:只可以睇已儲低嘅歌,唔可以編輯或儲存"
+    : "⚠ 網絡唔穩定:用緊上次儲低嘅歌單";
+}
+window.addEventListener("online", () => { dataFromCache = false; updateOfflineBanner(); });
+window.addEventListener("offline", updateOfflineBanner);
 
 async function showCurrent() {
   if (viewerQueue.length === 0) return;
@@ -581,14 +704,16 @@ async function showInPdfJs(file) {
 
   try {
     if (viewPdfFileId !== file.id || !viewPdfDoc) {
-      const buf = await fetchPdfBytes(file.id);
+      const buf = await getSheetBytes(file);
       viewPdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
       viewPdfFileId = file.id;
     }
     await renderViewPages();
   } catch (e) {
     console.error(e);
-    wrap.innerHTML = `<div class="empty"><div class="icon">⚠️</div>Load failed: ${escape(e.message)}</div>`;
+    wrap.innerHTML = e.message === OFFLINE_SHEET_MSG
+      ? `<div class="empty"><div class="icon">📴</div>${escape(e.message)}</div>`
+      : `<div class="empty"><div class="icon">⚠️</div>Load failed: ${escape(e.message)}</div>`;
     $("viewer-zoom").classList.add("hidden");
   }
 }
@@ -793,6 +918,7 @@ async function fitToHeight() {
 // ────────────────────────────────────────────────
 async function enterEditMode() {
   if (!oauthToken?.access_token) return toast("Sign in first.");
+  if (off.isOffline()) return toast("📴 冇網絡:而家唔可以編輯,因為改完儲唔到。有網時再試。", 6000);
   if (viewerQueue.length === 0) return;
   const cur = viewerQueue[viewerIndex];
 
@@ -1538,6 +1664,7 @@ async function saveAndUpload() {
     toast("No changes to save.");
     return;
   }
+  if (off.isOffline()) return toast(`📴 ${OFFLINE_EDIT_MSG}`, 8000);
 
   toast(`Saving ${live.length} annotation${live.length === 1 ? "" : "s"}…`, 8000);
 
@@ -1628,8 +1755,18 @@ async function saveAndUpload() {
     pdf.setKeywords([WM_META_PREFIX + JSON.stringify(textAnns)]);
 
     const out = await pdf.save();
-    await uploadPdfBytes(cur.file.id, out);
+    let up;
+    try {
+      up = await uploadPdfBytes(cur.file.id, out);
+    } catch (eUp) {
+      // Edit mode stays open, so nothing is lost.
+      if (eUp instanceof TypeError || off.isOffline()) throw new Error(OFFLINE_EDIT_MSG);
+      throw eUp;
+    }
     toast(`Saved ✓ ${cur.name}`);
+    // Keep the device copy in step with Drive, so offline shows the new markup.
+    if (up?.modifiedTime) cur.file.modifiedTime = up.modifiedTime;
+    await off.putSheet(cur.file.id, cur.file.modifiedTime, out.slice(0));
 
     // Re-render immediately from the bytes we just saved. showInPdfJs would
     // reuse the stale cached doc for the same file id (and re-fetching Drive lags
@@ -1771,6 +1908,7 @@ function renderPlSuggest(query) {
 
 async function savePlaylist() {
   if (!oauthToken?.access_token) return toast("Sign in first.");
+  if (off.isOffline()) return toast("📴 冇網絡:歌單未儲存。有網時再撳 💾 Save。", 7000);
   const id = await ensurePlaylistsFolder();
   if (!id) return;
   plEditing.date = $("pl-date").value;
@@ -1801,6 +1939,7 @@ async function savePlaylist() {
 
 async function deletePlaylist() {
   if (!plEditing?.id) return;
+  if (off.isOffline()) return toast("📴 冇網絡:而家刪唔到歌單。", 6000);
   if (!confirm("Delete this playlist?")) return;
   try {
     await deleteDriveFile(plEditing.id);
@@ -2007,6 +2146,9 @@ $("viewer-next").addEventListener("click", async () => {
   if (viewerIndex < viewerQueue.length - 1) { viewerIndex++; await showCurrent(); }
 });
 $("viewer-edit").addEventListener("click", enterEditMode);
+$("offline-status").addEventListener("click", () => {
+  if (prefetchFailed.length && !off.isOffline()) prefetchPlaylist(viewerQueue);
+});
 $("viewer-cancel").addEventListener("click", () => exitEditMode());
 $("viewer-save").addEventListener("click", saveAndUpload);
 
@@ -2269,4 +2411,8 @@ function showSetupHint() {
   $("playlist-list").innerHTML = "";
 }
 
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js").catch((e) => console.warn("SW register failed", e));
+}
+updateOfflineBanner();
 init();

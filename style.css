@@ -455,3 +455,25 @@ body {
 }
 .pl-suggest .item:hover { background: var(--accent-soft); }
 .pl-suggest .item:last-child { border-bottom: 0; }
+
+/* Offline preload */
+.offline-status {
+  font-size: 11px; line-height: 1.3; margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--muted); cursor: default;
+}
+.offline-status.ok { color: #1c8a3a; }
+[data-theme="night"] .offline-status.ok { color: #6fcf8a; }
+.offline-status.warn { color: var(--accent); cursor: pointer; white-space: normal; }
+.offline-banner {
+  position: sticky; top: 0; z-index: 60;
+  padding: 8px 16px; font-size: 13px; text-align: center;
+  background: #5a4a1e; color: #fff6dc;
+}
+.playlist-card .pl-offline-badge {
+  display: inline-block; margin-top: 8px;
+  font-size: 11px; padding: 3px 8px; border-radius: 999px;
+  background: #e3f3e6; color: #1c6b35;
+}
+.playlist-card .pl-offline-badge.partial { background: var(--accent-soft); color: var(--accent); }
+[data-theme="night"] .playlist-card .pl-offline-badge:not(.partial) { background: #1f3a27; color: #8fdca4; }
